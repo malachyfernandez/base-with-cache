@@ -1,0 +1,45 @@
+{
+  "expo": {
+    "name": "Base Project",
+    "slug": "base-project",
+    "scheme": "my-convex-app",
+    "version": "1.0.0",
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "experiments": {
+      "tsconfigPaths": true
+    },
+    "plugins": [
+      "expo-router"
+    ],
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.malachyfernandez.baseproject"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "3862c645-7359-4aaa-b508-8c6fa493b6a8"
+      }
+    }
+  }
+}

@@ -1,0 +1,16 @@
+import React from 'react';
+import { Svg, Path } from 'react-native-svg';
+
+interface DropDownArrowSVGProps {
+    size?: number;
+}
+
+const DropDownArrowSVG = ({ size = 32 }: DropDownArrowSVGProps) => {
+    return (
+        <Svg width={size} height={size} viewBox="0 0 32 32" fill="none">
+            <Path d="M11.6133 15.6133L15.0667 19.0667C15.5867 19.5867 16.4267 19.5867 16.9467 19.0667L20.4 15.6133C21.24 14.7733 20.64 13.3333 19.4533 13.3333H12.5467C11.36 13.3333 10.7733 14.7733 11.6133 15.6133Z" fill="white"/>
+        </Svg>
+    );
+};
+
+export default DropDownArrowSVG;
