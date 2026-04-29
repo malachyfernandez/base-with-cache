@@ -7,7 +7,7 @@ interface SendSVGProps {
     className?: string;
 }
 
-const SendSVG = ({ size = 32, color = 'white', className }: SendSVGProps) => {
+const SendSVG = ({ size = 32, color = 'text-inverted', className }: SendSVGProps) => {
     return (
         <Svg 
             width={size} 

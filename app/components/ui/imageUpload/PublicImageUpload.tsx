@@ -269,9 +269,9 @@ const PublicImageUpload = ({
 
                 <AppButton variant='green' className='w-40' onPress={handleUpload}>
                     {isUploading ? (
-                        <ActivityIndicator color='white' />
+                        <ActivityIndicator color='text-inverted' />
                     ) : (
-                        <FontText weight='medium' color='white'>
+                        <FontText weight='medium' color='text-inverted'>
                             {buttonLabel}
                         </FontText>
                     )}

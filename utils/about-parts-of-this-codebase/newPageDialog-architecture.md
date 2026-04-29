@@ -177,7 +177,7 @@ const checkImageUrl = async (imageUrl: string) => {
 {previewUrl && (
     <Column gap={2}>
         <PoppinsText weight='medium'>Preview</PoppinsText>
-        <div className='w-full h-48 border border-subtle-border bg-inner-background rounded-lg overflow-hidden'>
+        <div className='w-full h-48 border border-subtle-border bg-background rounded-lg overflow-hidden'>
             <img 
                 src={previewUrl} 
                 alt="Preview" 
@@ -788,7 +788,7 @@ const canCreate = isValidTitle && hasImage;
             </PoppinsText>
         </AppButton>
         <AppButton variant={createButtonVariant} className='h-12 flex-1' onPress={() => void handleCreate(true)}>
-            <PoppinsText weight='medium' color='white'>
+            <PoppinsText weight='medium' color='text-inverted'>
                 {`Generate Page  →`}
             </PoppinsText>
         </AppButton>

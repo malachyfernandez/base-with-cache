@@ -145,7 +145,7 @@ We use custom layout components that provide consistent spacing and behavior:
 Our primary text component with Poppins font integration:
 
 ```tsx
-<PoppinsText weight="medium" variant="heading" color="white">
+<PoppinsText weight="medium" variant="heading" color="text-inverted">
   Heading Text
 </PoppinsText>
 
@@ -157,7 +157,7 @@ Our primary text component with Poppins font integration:
 **Props:**
 - `weight`: 'regular' | 'medium' | 'bold'
 - `variant`: 'default' | 'heading' | 'subtext'
-- `color`: 'black' | 'white'
+- `color`: 'black' | 'text-inverted'
 
 ### Buttons
 
@@ -170,7 +170,7 @@ Versatile button component with multiple variants:
 </AppButton>
 
 <AppButton variant="green" onPress={handleSubmit}>
-  <PoppinsText color="white">Submit</PoppinsText>
+  <PoppinsText color="text-inverted">Submit</PoppinsText>
 </AppButton>
 ```
 

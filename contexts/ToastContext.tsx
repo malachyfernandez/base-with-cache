@@ -72,7 +72,7 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       {children}
       {currentToast && (
         <Animated.View className="absolute left-0 right-0 bottom-0 items-center pb-12 z-50" style={animatedToastStyle}>
-          <Row className="gap-0 bg-white pl-5 rounded-full min-h-12 h-min max-w-[90%] min-w-min shadow-lg shadow-black/10 items-center justify-center">
+          <Row className="gap-0 bg-text-inverted pl-5 rounded-full min-h-12 h-min max-w-[90%] min-w-min shadow-lg shadow-black/10 items-center justify-center">
             
             <Text className="text-base">
               {currentToast.message}

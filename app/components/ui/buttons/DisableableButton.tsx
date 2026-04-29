@@ -27,7 +27,7 @@ const DisableableButton = ({
             variant={enabledVariant} 
             onPress={onPress}
         >
-            <FontText color={enabledVariant === 'outline' || enabledVariant === 'outline-alt' ? 'black' : 'white'} weight='medium'>
+            <FontText color={enabledVariant === 'outline' || enabledVariant === 'outline-alt' ? 'black' : 'text-inverted'} weight='medium'>
                 {enabledText}
             </FontText>
         </AppButton>

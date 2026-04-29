@@ -1,106 +1,86 @@
-import React, { useState, useCallback } from 'react';
-import { View, TextInput, Pressable } from 'react-native';
-import Column from './layout/Column';
-import Row from './layout/Row';
-import FontText from './ui/text/FontText';
-import AppButton from './ui/buttons/AppButton';
-import { useValue } from 'hooks/useData';
-import { useUndoRedo } from 'hooks/useUndoRedo';
-import TopSiteBar from './layout/TopSiteBar';
+import React from 'react';
+import { View } from 'react-native';
+import Layout, { LayoutNode } from './Layout';
+import { DemoContent } from './DemoContent';
+
+/* ───────── Example layout config ───────── */
+
+const exampleConfig: LayoutNode = {
+    type: 'split',
+    direction: 'row',
+    children: [
+        {
+            type: 'split',
+            direction: 'column',
+            size: '74%',
+            children: [
+                {
+                    type: 'split',
+                    direction: 'row',
+                    size: '48%',
+                    children: [
+                        { type: 'screen', screenId: 1, size: '38%' },
+                        { type: 'screen', screenId: 2, size: '62%' },
+                    ],
+                },
+                { type: 'screen', screenId: 3, size: '52%' },
+            ],
+        },
+        { type: 'screen', screenId: 4, size: '26%' },
+    ],
+};
+
+/* ───────── Page ───────── */
 
 const MainPage: React.FC = () => {
-    const [userData] = useValue("userData");
-    const userId = userData.value.userId || "";
-
-    const [postsState, setPosts] = useValue<Record<string, { text: string; createdAt: number }>>("posts", {
-        defaultValue: {},
-    });
-    const allPosts = postsState.value || {};
-    const postEntries = Object.entries(allPosts).sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0));
-
-    const [modalVisible, setModalVisible] = useState(false);
-    const [newPostText, setNewPostText] = useState("");
-    const { executeCommand } = useUndoRedo();
-
-    const handleCreatePost = useCallback(() => {
-        if (!newPostText.trim()) return;
-        const postId = `post_${Date.now()}`;
-        const nextPosts = {
-            ...allPosts,
-            [postId]: { text: newPostText.trim(), createdAt: Date.now() },
-        };
-        const prevPosts = { ...allPosts };
-
-        executeCommand({
-            description: "Create post",
-            action: () => setPosts(nextPosts),
-            undoAction: () => setPosts(prevPosts),
-        });
-
-        setNewPostText("");
-        setModalVisible(false);
-    }, [newPostText, allPosts, executeCommand, setPosts]);
-
-    const handleCancel = useCallback(() => {
-        setNewPostText("");
-        setModalVisible(false);
-    }, []);
-
     return (
-        <View className='w-screen h-screen p-safe'>
-            <Column className='flex-1 p-4 gap-4'>
-                <FontText className='text-lg font-bold' color="text">User: {userId || "Unknown"}</FontText>
+        <View style={{ width: '100%', height: '100%', padding: 24, backgroundColor: 'rgb(20, 20, 20)' }}>
+            <Layout
+                config={exampleConfig}
+                // buttonIcon={<CheckIcon />}
+                theme={{
+                    borderWidth: 30,
+                    gapWidth: 30,
+                    inactiveButtonThicknessRatio: 0.3,
+                    borderRadius: 60,
+                    buttonSpanRatio: 1,
+                    canvasColor: { l: 0.18, c: 0, h: 0 },
+                    panelColor: { l: 0.3, c: 0, h: 0 },
+                      buttonColor: { l: 0.35, c: 0.03, h: 320 },
+                    // buttonColor: { l: 0.3, c: 0, h: 0 },
+                    contrastStep: -0.03,
+                    hoverBrightness: 0.05,
+                    buttonClassName: 'border-[1px] border-text/20  scale-70',
+                }}
 
-                <AppButton variant="filled" className="self-start" onPress={() => setModalVisible(true)}>
-                    <FontText color="white">Create Post</FontText>
-                </AppButton>
 
-                <Column className='gap-2 flex-1'>
-                    {postEntries.length === 0 && (
-                        <FontText color="muted-text">No posts yet.</FontText>
-                    )}
-                    {postEntries.map(([postId, post]) => (
-                        <View key={postId} className='bg-background border border-border rounded p-3'>
-                            <FontText className='text-sm' color="text">{post.text}</FontText>
-                        </View>
-                    ))}
-                </Column>
-            </Column>
+            // theme={{
+            //   borderWidth: 0,
+            //   gapWidth: 20,
+            //   inactiveButtonThicknessRatio: 0.5,
+            //   borderRadius: 0,
+            //   buttonSpanRatio: 0.7,
+            //   canvasColor: { l: 0.18, c: 0, h: 0 },
+            //   panelColor: { l: 0.3, c: 0, h: 0 },
+            //   buttonColor: { l: 0.45, c: 0.05, h: 320 },
+            //   contrastStep: 0.1,
+            //   hoverBrightness: 0.03,
 
-            <View className='absolute top-0 right-0'>
-                <TopSiteBar />
-            </View>
-
-            {modalVisible && (
-                <Pressable
-                    className='absolute inset-0 bg-black/50 items-center justify-center z-50'
-                    onPress={handleCancel}
-                >
-                    <Pressable
-                        className='bg-background border border-border rounded-xl p-6 w-[90vw] max-w-md gap-4'
-                        onPress={(e: any) => e.stopPropagation()}
-                    >
-                        <FontText className='text-lg font-bold' color="text">New Post</FontText>
-                        <TextInput
-                            className='border border-border rounded p-3 text-text bg-background min-h-[80px]'
-                            value={newPostText}
-                            onChangeText={setNewPostText}
-                            placeholder="Write something..."
-                            placeholderTextColor="#888"
-                            multiline
-                            autoFocus
-                        />
-                        <Row className='gap-2 justify-end'>
-                            <AppButton variant="outline" onPress={handleCancel}>
-                                <FontText color="text">Cancel</FontText>
-                            </AppButton>
-                            <AppButton variant="filled" onPress={handleCreatePost}>
-                                <FontText color="white">Submit</FontText>
-                            </AppButton>
-                        </Row>
-                    </Pressable>
-                </Pressable>
-            )}
+            // }}
+            >
+                <Layout.Screen screenId={1}>
+                    <DemoContent text="Screen" screenId={1} />
+                </Layout.Screen>
+                <Layout.Screen screenId={2}>
+                    <DemoContent text="Screen" screenId={2} />
+                </Layout.Screen>
+                <Layout.Screen screenId={3}>
+                    <DemoContent text="Screen" screenId={3} />
+                </Layout.Screen>
+                <Layout.Screen screenId={4}>
+                    <DemoContent text="Screen" screenId={4} />
+                </Layout.Screen>
+            </Layout>
         </View>
     );
 };

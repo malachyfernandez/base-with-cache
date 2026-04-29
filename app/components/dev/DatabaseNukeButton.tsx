@@ -54,7 +54,7 @@ export default function DatabaseNukeButton() {
   return (
     <View className="bg-red-900 border-b-2 border-red-600">
       <View className="p-3 mt-8">
-        <Text className="text-white text-xs font-bold mb-2 text-center">
+        <Text className="text-text-inverted text-xs font-bold mb-2 text-center">
           🔥 DEV TOOLS - DATABASE NUKE 🔥
         </Text>
         
@@ -64,7 +64,7 @@ export default function DatabaseNukeButton() {
             disabled={isLoading}
             className="bg-blue-600 px-3 py-1 rounded"
           >
-            <Text className="text-white text-xs">
+            <Text className="text-text-inverted text-xs">
               {isLoading ? "Loading..." : "Check Counts"}
             </Text>
           </TouchableOpacity>
@@ -74,7 +74,7 @@ export default function DatabaseNukeButton() {
             disabled={isLoading}
             className="bg-red-600 px-3 py-1 rounded"
           >
-            <Text className="text-white text-xs font-bold">
+            <Text className="text-text-inverted text-xs font-bold">
               ⚠️ NUKE ALL
             </Text>
           </TouchableOpacity>

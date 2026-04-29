@@ -8,7 +8,7 @@
 /* @theme {
     --color-l: rgb(246, 0, 0);
     --color-background: rgb(30, 30, 30);
-    --color-inner-background: rgb(105, 95, 95);
+    --color-background: rgb(105, 95, 95);
     --color-text: #000;
     --color-muted-text: #a0a0a0;
     --color-accent-hover: #5aa85a;
@@ -20,20 +20,18 @@
 
 @theme {
 
-   --color-outer-background: rgb(30, 30, 30);
+   --color-outer-background: rgb(30, 30, 31);
    --color-accent: #9a7a33;
    --color-accent-light: #d9b458;
    /* --color-accent: #C39f27; */
    --color-accent-hover: #aa8a43;
    --color-accent-hoverOLD: #d3af37;
-   --color-text: #1a1a1a;
-   --color-text-inverted: #ffffff;
+   --color-text: #ffffff;
+   --color-text-inverted: #000000;
 
 
    --color-l: rgb(246, 0, 0);
-   --color-background: rgb(165, 159, 150);
-   --color-inner-background: rgb(165, 159, 150);
-   --color-background-inner: rgb(165, 159, 150);
+   --color-background: rgb(45, 45, 47);
 
    
    --color-background-light: rgb(165, 159, 150);
@@ -41,7 +39,7 @@
     --color-muted-text: #888888;
     /* --color-accent-hover: #3a6a3a; */
     --color-highlight: #7cb87c;
-    --color-border: #1a1a1a;
+    --color-border: #fff;
     --color-subtle-border: #0005;
     --color-inverted-sections: #1a1a1a;
 }

@@ -7,7 +7,7 @@ interface DoubleBeanItArrowSVGProps {
     className?: string;
 }
 
-const DoubleBeanItArrowSVG = ({ size = 39, color = 'white', className }: DoubleBeanItArrowSVGProps) => {
+const DoubleBeanItArrowSVG = ({ size = 39, color = 'text-inverted', className }: DoubleBeanItArrowSVGProps) => {
     return (
         <Svg 
             width={size} 

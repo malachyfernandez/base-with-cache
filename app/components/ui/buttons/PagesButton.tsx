@@ -44,7 +44,7 @@ export function PagesButton({ onPress }: PagesButtonProps) {
 
     return (
         <TouchableOpacity 
-        className='bg-inner-background border-y-2 border-r-2 border-border w-16 h-12 shadow-black/50 rounded-r-full justify-center items-center my-4 mr-4 pl-1' 
+        className='bg-background border-y-2 border-r-2 border-border w-16 h-12 shadow-black/50 rounded-r-full justify-center items-center my-4 mr-4 pl-1' 
         style={{ shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.5, shadowRadius: 40 }}
         onPress={onPress}
     >

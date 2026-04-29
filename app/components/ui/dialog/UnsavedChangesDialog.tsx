@@ -29,7 +29,7 @@ const UnsavedChangesDialog = ({ isOpen, onOpenChange, onStay, onLeave }: Unsaved
                                 <FontText weight='medium'>Stay</FontText>
                             </AppButton>
                             <AppButton variant='filled' className='w-24' onPress={onLeave}>
-                                <FontText weight='medium' color='white'>Leave</FontText>
+                                <FontText weight='medium' color='text-inverted'>Leave</FontText>
                             </AppButton>
                         </Row>
                     </Column>

@@ -4,7 +4,7 @@ import { useFonts } from 'expo-font';
 
 type FontWeight = 'regular' | 'medium' | 'bold';
 type FontTextVarient = 'default' | 'heading' | 'subtext';
-type TextColor = 'black' | 'white';
+type TextColor = 'black' | 'text-inverted';
 
 interface InlineEditableTextProps {
     value: string;
@@ -66,7 +66,7 @@ const InlineEditableText = ({
     };
 
     const getTailwindColor = () => {
-        return color === 'black' ? 'text-text' : 'text-white';
+        return color === 'black' ? 'text-text' : 'text-text-inverted';
     };
 
     const getClassName = () => {
@@ -124,7 +124,7 @@ const InlineEditableText = ({
                 placeholder={placeholder}
                 multiline
                 selection={shouldSelect ? { start: 0, end: editValue.length } : undefined}
-                className={`border-2 bg-white rounded-lg text-base focus:outline-none ${
+                className={`border-2 bg-text-inverted rounded-lg text-base focus:outline-none ${
                     compact 
                         ? 'border-blue-400 p-1' 
                         : 'border-blue-500 p-3'

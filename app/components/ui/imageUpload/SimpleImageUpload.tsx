@@ -214,9 +214,9 @@ const SimpleImageUpload = ({
     return (
         <AppButton variant={variant} className={`w-40 ${className}`} onPress={handleUpload}>
             {isUploading ? (
-                <ActivityIndicator color='white' />
+                <ActivityIndicator color='text-inverted' />
             ) : (
-                <FontText weight='medium' color={variant === 'outline' ? 'black' : 'white'}>
+                <FontText weight='medium' color={variant === 'outline' ? 'black' : 'text-inverted'}>
                     {buttonLabel}
                 </FontText>
             )}

@@ -11,9 +11,9 @@ interface DialogHeaderProps {
 const DialogHeader = ({ text, subtext, className }: DialogHeaderProps) => {
     return (
         <Column className={`gap-0 bg-text px-5 py-4 items-center -mx-5 -mt-5 mb-5 ${className || ''}`.trim()}>
-            <FontText weight='medium' color='white'>{text}</FontText>
+            <FontText weight='medium' color='text-inverted'>{text}</FontText>
             {subtext && (
-                <FontText variant='subtext' weight='medium' color='white'>{subtext}</FontText>
+                <FontText variant='subtext' weight='medium' color='text-inverted'>{subtext}</FontText>
             )}
         </Column>
     );

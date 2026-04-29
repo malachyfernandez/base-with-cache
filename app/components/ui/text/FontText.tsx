@@ -5,7 +5,7 @@ import { useCSSVariable } from 'uniwind';
 
 type FontWeight = 'regular' | 'medium' | 'bold';
 type FontTextVariant = 'default' | 'heading' | 'subtext' | 'cardHeader' | 'lowercaseCardHeader';
-type TextColor = 'black' | 'white' | 'red';
+type TextColor = 'black' | 'text-inverted' | 'red';
 
 interface FontTextProps extends PropsWithChildren {
     className?: string;

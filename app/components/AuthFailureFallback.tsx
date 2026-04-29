@@ -40,7 +40,7 @@ export default function AuthFailureFallback() {
               className="w-44"
               onPress={handleReload}
             >
-              <FontText color="white" weight="bold">
+              <FontText color="text-inverted" weight="bold">
                 Enter
               </FontText>
             </AppButton>

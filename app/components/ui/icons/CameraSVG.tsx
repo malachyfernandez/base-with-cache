@@ -7,7 +7,7 @@ interface CameraSVGProps {
     className?: string;
 }
 
-const CameraSVG = ({ size = 32, color = 'white', className }: CameraSVGProps) => {
+const CameraSVG = ({ size = 32, color = 'text-inverted', className }: CameraSVGProps) => {
     return (
         <Svg 
             width={size} 

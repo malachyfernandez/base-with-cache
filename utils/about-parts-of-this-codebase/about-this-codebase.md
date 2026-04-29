@@ -144,7 +144,7 @@ We use custom layout components that provide consistent spacing and behavior:
 Our primary text component with custom font integration:
 
 ```tsx
-<FontText weight="medium" variant="heading" color="white">
+<FontText weight="medium" variant="heading" color="text-inverted">
   Heading Text
 </FontText>
 
@@ -156,7 +156,7 @@ Our primary text component with custom font integration:
 **Props:**
 - `weight`: 'regular' | 'medium' | 'bold'
 - `variant`: 'default' | 'heading' | 'subtext'
-- `color`: 'black' | 'white' | 'primary'
+- `color`: 'black' | 'text-inverted' | 'primary'
 
 ### Buttons
 
@@ -169,7 +169,7 @@ Versatile button component with multiple variants:
 </AppButton>
 
 <AppButton variant="green" onPress={handleSubmit}>
-  <FontText color="white">Submit</FontText>
+  <FontText color="text-inverted">Submit</FontText>
 </AppButton>
 ```
 

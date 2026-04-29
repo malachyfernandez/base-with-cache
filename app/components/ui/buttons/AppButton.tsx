@@ -18,11 +18,11 @@
  * </AppButton>
  * 
  * <AppButton variant="accent" onPress={handleSubmit}>
- *   <FontText color="white">Submit</FontText>
+ *   <FontText color="text-inverted">Submit</FontText>
  * </AppButton>
  * 
  * <AppButton variant="grey" onPress={handleDelete}>
- *   <FontText color="white">Delete</FontText>
+ *   <FontText color="text-inverted">Delete</FontText>
  * </AppButton>
  * ```
  * 

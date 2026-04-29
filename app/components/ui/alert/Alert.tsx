@@ -56,7 +56,7 @@ const Alert = ({
                                     onPress={button.onPress}
                                 >
                                     <FontText 
-                                        color={button.variant === 'outline' ? 'black' : 'white'} 
+                                        color={button.variant === 'outline' ? 'black' : 'text-inverted'} 
                                         weight='medium'
                                     >
                                         {button.text}

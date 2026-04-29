@@ -57,15 +57,15 @@ const JoinHandler = ({
         <>
             {doesGameExist ?
                 <AppButton variant="filled" className="h-10 w-20" onPress={joinGame}>
-                    <FontText weight='medium' color='white'>{'Join'}</FontText>
+                    <FontText weight='medium' color='text-inverted'>{'Join'}</FontText>
                 </AppButton>
                 
                 // <AppButton variant="filled" className="h-10 w-20" onPress={() => onJoin(gameCode)}>
-                //     <FontText weight='medium' color='white'>{'Join'}</FontText>
+                //     <FontText weight='medium' color='text-inverted'>{'Join'}</FontText>
                 // </AppButton>
                 :
                 <AppButton variant="grey" className="h-10 w-20" onPress={setInvalid} >
-                    <FontText weight='medium' color='white'>{innerText}</FontText>
+                    <FontText weight='medium' color='text-inverted'>{innerText}</FontText>
                 </AppButton>
             }
         </>

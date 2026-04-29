@@ -8,7 +8,7 @@ interface BigTextProps extends PropsWithChildren {
 
 const BigText = ({ children, className }: BigTextProps) => {
     return (
-        <Text className={`text-8xl font-bold text-white ${className}`}>
+        <Text className={`text-8xl font-bold text-text-inverted ${className}`}>
             {children}
         </Text>
     );

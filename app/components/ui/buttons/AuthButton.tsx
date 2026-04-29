@@ -67,7 +67,7 @@ const AuthButton = ({
                 {isAuthLoading ? "Loading..." : buttonText}
             </Text>
         </TouchableOpacity> */}
-        <FontText color='white' weight='bold'>{buttonText}</FontText>
+        <FontText color='text-inverted' weight='bold'>{buttonText}</FontText>
         </AppButton>
     );
 };
