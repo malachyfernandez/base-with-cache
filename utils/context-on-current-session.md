@@ -1,131 +1,231 @@
-# Current Session Context: The Great DataProvider Migration
+# Current Session: Resizable Windowing System Animation
 
-This document serves as a comprehensive bridge between the legacy architecture and the new centralized data system. It documents the evolution of the codebase from direct, fragmented Convex subscriptions to a unified, cached, and performant architecture.
+This document tracks the architecture and animation attempts for the resizable windowing system.
 
-## Primary Documentation References
-For deep dives into specific systems, refer to these foundational documents:
-- [Paper Codebase Guide](file:///Users/malachyfernandez/Documents/1-programing/wolffspoint/utils/about-parts-of-this-codebase/about-this-codebase.md) - Overview of architecture, layout, and philosophy.
-- [DataProvider & Data Hooks System](file:///Users/malachyfernandez/Documents/1-programing/wolffspoint/utils/about-parts-of-this-codebase/userVariables-system.md) - Reference for new hooks (`useValue`, `useList`, etc.).
-- [Migration Guide](file:///Users/malachyfernandez/Documents/1-programing/wolffspoint/utils/about-parts-of-this-codebase/migrating-to-dataprovider.md) - Step-by-step instructions for converting legacy code.
+## Architecture Overview
 
----
+### Two-Layer System
 
-## 1. The Starting Point: "None of this existed"
+The layout uses a two-layer rendering approach:
 
-Before this migration began, the application relied on direct Convex hooks (`useQuery`, `useMutation`) and legacy wrappers (`useUserVariable`, `useUserList`) scattered across every component.
+- **Window layer** (`layerMode="window"`): Renders the actual content with animated sizes
+- **Controls layer** (`layerMode="controls"`): Renders interactive buttons on top, always transparent
 
-### The Problem (The "Why")
-- **Subscription Fragmentation**: Every single call to `useUserVariable` created a separate websocket subscription to Convex. If a component was rendered 5 times, it opened 5 connections for the same data.
-- **Tab Navigation Churn**: When navigating between tabs (e.g., in `PlayerGamePage`), components would unmount, destroying their subscriptions. Re-entering the tab forced a complete re-fetch, causing **UI Flickering** and **Network Spikes**.
-- **State Inconsistency**: Components sometimes saw slightly different versions of the same data if their local `useQuery` calls weren't perfectly synchronized.
+Both layers render the same tree structure, but the controls layer is absolutely positioned and pointer-events-managed so buttons stay fixed while the window layer animates.
 
----
+### Layout Tree Structure
 
-## 2. The Solution: Centralized DataProvider
+The layout is a tree of `LayoutNode`:
 
-We introduced a two-layer system to decouple components from the network:
-1. **`DataStore` (The Brain)**: A global, non-React class that manages a cache of results and a reference-counting system. It ensures only ONE subscription exists for any unique data key/args combination.
-2. **`DataProvider` (The Bridge)**: A React component that wraps the app and renders individual `DataSubscriber` children for every active subscription in the `DataStore`.
-
-### The "Magic" of the Reference Count
-When a component calls `useValue("profile")`, it "registers" interest. The `DataStore` increments a counter. If the counter moves from 0 to 1, the `DataProvider` mounts a real Convex hook. When the component unmounts, the counter drops. We keep the data "hot" for a 5-second grace period to allow for instant tab-switching without re-fetching.
-
----
-
-## 3. Migration Examples
-
-### Example A: Single Variable (`userData`)
-**OLD (Direct hook with inline config):**
-```tsx
-const [userData, setUserData] = useUserVariable<UserData>({
-    key: "userData",
-    defaultValue: { name: "", email: "", userId: "" },
-    privacy: "PUBLIC"
-});
-```
-
-**NEW (Centralized config + clean hook):**
-1. Define in `utils/dataConfig.ts`:
 ```ts
-userData: {
-    type: "variable",
-    privacy: "PUBLIC",
-    defaultValue: { name: "", email: "", userId: "" },
-}
-```
-2. Use in component:
-```tsx
-const [userData, setUserData] = useValue<UserData>("userData");
-```
+type LayoutNode = SplitNode | ScreenNode;
 
-### Example B: List Filtering (`myGames`)
-**OLD:**
-```tsx
-const myGames = useUserListGet({
-    key: "games",
-    userIds: [userId]
-});
+type SplitNode = {
+  type: 'split';
+  direction: 'row' | 'column';
+  children: LayoutNode[];
+  size?: string | number;  // flex percentage like "50%"
+};
+
+type ScreenNode = {
+  type: 'screen';
+  screenId: string | number;
+  size?: string | number;
+};
 ```
 
-**NEW:**
-```tsx
-const myGames = useFindListItems<GameInfo>("games", {
-    userIds: [userId],
-});
+Example config from MainPage:
+
+```ts
+const exampleConfig: LayoutNode = {
+  type: 'split',
+  direction: 'row',
+  children: [
+    {
+      type: 'split',
+      direction: 'column',
+      size: '74%',
+      children: [
+        {
+          type: 'split',
+          direction: 'row',
+          size: '48%',
+          children: [
+            { type: 'screen', screenId: 1, size: '38%' },
+            { type: 'screen', screenId: 2, size: '62%' },
+          ],
+        },
+        { type: 'screen', screenId: 3, size: '52%' },
+      ],
+    },
+    { type: 'screen', screenId: 4, size: '26%' },
+  ],
+};
 ```
 
----
+### Layout State Management
 
-## 4. Key Discoveries & Hard-Won Lessons
+The `Layout` component manages three config states:
 
-### The React 18 `useEffect` Ordering Deadlock
-During the migration of `MainPage.tsx`, we encountered a "stuck" loading state. We discovered that because React executes **child effects before parent effects**:
-1. `MainPage` (Child) would register a subscription in its `useEffect`.
-2. `DataProvider` (Parent) hadn't run its `useEffect` yet, so it hadn't attached its listener to the store.
-3. The notification from `MainPage` was lost, and the background subscriber never mounted.
+```ts
+const [committedConfig, setCommittedConfig] = React.useState(config);  // The actual committed layout
+const [previewConfig, setPreviewConfig] = React.useState<LayoutNode | null>(null);  // Hover preview
+const [windowConfig, setWindowConfig] = React.useState(config);  // What the window layer renders
+const [animateWindowSizes, setAnimateWindowSizes] = React.useState(false);  // Animation flag
+```
 
-**The Fix:** We updated `DataProvider.tsx` to synchronously catch up on all active subscriptions the moment its effect runs.
+The window layer renders either `previewConfig` (during hover) or `windowConfig` (committed state).
 
-### Stability & Memoization
-We learned that `subId` generation (based on `JSON.stringify(args)`) is highly sensitive. Passing inline arrays like `userIds={[userId]}` caused continuous unmounting/remounting of subscriptions because `[userId] !== [userId]` referentially.
-- **Best Practice**: Always memoize argument arrays or objects passed to data hooks.
+### Recursive Renderer
 
----
+`LayoutRenderer` recursively renders the tree using `react-native-reanimated`:
 
-## 5. Current Migration Status (Snapshot)
+```ts
+const LayoutRenderer = ({ node, animateSizes }: RendererProps) => {
+  const targetFlexGrow = getFlexGrowValue(node.size);
+  const flexGrow = useSharedValue(targetFlexGrow);
 
-| Component | Status | Notes |
-| :--- | :--- | :--- |
-| `MainPage.tsx` | ✅ Migrated | Core logic now uses `useValue` and `useFindListItems`. |
-| `PlayerGamePage.tsx` | ✅ Migrated | All tabs (`TownSquare`, `Newspaper`, etc.) are optimized. |
-| `AllGamesPage.tsx` | ✅ Migrated | Filtered lists use the central cache. |
-| `NewserGamePage.tsx` | ✅ Migrated | Tab switching is flicker-free. |
-| `TopSiteBar.tsx` | ✅ Migrated | Now uses `useValue` and `useFindListItems`. |
-| `GamePage.tsx` | ✅ Migrated | Now uses `useFindListItems` and `useFindValues`. |
-| `GameList.tsx` | ✅ Migrated | Now uses `useValue`. |
-| `ProfileInfo.tsx` | ✅ Migrated | Now uses `useValue`. |
-| `RemoveGameButton.tsx` | ✅ Migrated | Now uses `useValue` and `useListRemove`. |
-| `DaySelector.tsx` | ✅ Migrated | Now uses `useList`. |
-| `ChangeDateInfo.tsx` | ✅ Migrated | Now uses `useList`. |
-| `GetStartedButton.tsx` | ✅ Migrated | Now uses `useList`. |
-| `ArchivedGamesDialog.tsx` | ✅ Migrated | Now uses `useValue` and `useFindListItems`. |
-| `JoinedGames.tsx` | ✅ Migrated | Legacy import removed. |
-| `JoinGameButton.tsx` | ✅ Migrated | Legacy import removed. |
-| `JoinedGameListItem.tsx` | ✅ Migrated | Now uses `useFindListItems`. |
-| `JoinedGameOptionsDialog.tsx` | ✅ Migrated | Now uses `useFindListItems`. |
-| `JoinHandler.tsx` | ✅ Migrated | Now uses `useFindListItems`. |
-| `FriendListItem.tsx` | ✅ Migrated | Now uses `useFindValues`. |
-| `NameFromUserID.tsx` | ✅ Migrated | Now uses `useFindValues`. |
-| `NewspaperPageOPERATOR.tsx` | ✅ Migrated | Now uses `useListSet`. |
-| `ShareButton.tsx` | ✅ Migrated | Now uses `useListSet`. |
-| `NewWolffspointButtonAndDialogue.tsx` | ✅ Migrated | Now uses `useListSet`. |
-| `TownSquarePostDialog.tsx` | ✅ Migrated | Now uses `useListSet`. |
-| `OperatorDayNavigation.tsx` | ✅ Migrated | Now uses `useListSet`. |
-| `useTownSquareForum.ts` | ✅ Migrated | Now uses `useListSet` and `useListRemove`. |
+  React.useEffect(() => {
+    cancelAnimation(flexGrow);
+    if (animateSizes) {
+      flexGrow.value = withSpring(targetFlexGrow, SIZE_SPRING);
+      return;
+    }
+    flexGrow.value = targetFlexGrow;
+  }, [animateSizes, flexGrow, targetFlexGrow]);
 
----
+  const animatedFlexStyle = useAnimatedStyle(() => ({
+    flexGrow: flexGrow.value,
+  }));
 
-## 6. Future Directions
-- **Strict Typing**: Resolve remaining `any` types in list mappings across the app.
-- **Legacy Cleanup**: All app components have been migrated. Legacy hook files (`hooks/useUserVariable.ts`, `hooks/useUserList.ts`, `hooks/useUserListGet.ts`, `hooks/useUserVariableGet.ts`) are no longer imported by any app component and can be safely deprecated/removed once confirmed stable.
-- **Performance Auditing**: Use the Convex dashboard to confirm that "Read Quota" has stabilized during rapid navigation.
+  return <Animated.View style={[BASE_FLEX_STYLE, animatedFlexStyle]}>{/* ... */}</Animated.View>;
+};
+```
+
+The animation strategy is: when `animateSizes` becomes true, spring the `flexGrow` from current value to target.
+
+### Layout Actions
+
+Buttons trigger `LayoutAction` events:
+
+```ts
+type LayoutAction =
+  | { type: 'edge'; key: string; path: string; side: 'top' | 'right' | 'bottom' | 'left' }
+  | { type: 'split'; key: string; path: string; index: number; direction: 'row' | 'column' };
+```
+
+- **Edge action**: Pressing a border button to add a new screen
+- **Split action**: Pressing a gap button to insert a screen between existing ones
+
+### Layout Mutation Logic
+
+The system builds a plan with two configs:
+
+```ts
+type LayoutActionPlan = {
+  introConfig: LayoutNode;  // New structure with 0% sizes
+  finalConfig: LayoutNode;  // New structure with final normalized sizes
+};
+```
+
+For split actions (inserting into a gap):
+- `introConfig`: Existing children keep current sizes, new child at 0%
+- `finalConfig`: All children renormalized to share space equally
+
+For edge actions (wrapping in new split):
+- `introConfig`: Wrapped node at 100%, new sibling at 0%
+- `finalConfig`: Both at 50%
+
+Example helpers:
+
+```ts
+const insertScreenIntoChildrenIntro = (children: LayoutNode[], insertIndex: number, screenId: number): LayoutNode[] => {
+  const currentShares = resolveShares(children);
+  const rebuiltChildren = children.map((child, index) => ({
+    ...child,
+    size: formatPercent(currentShares[index] * 100),  // Keep current sizes
+  }));
+
+  rebuiltChildren.splice(normalizedIndex, 0, {
+    type: 'screen',
+    screenId,
+    size: '0%',  // New screen at 0%
+  });
+
+  return rebuiltChildren;
+};
+```
+
+## Animation Attempts
+
+### Attempt 1: Global Layout Transitions
+
+**What we tried:** Used `LinearTransition` from react-native-reanimated on all `Animated.View` components in the tree.
+
+```ts
+const LAYOUT_TRANSITION = LinearTransition.springify().mass(0.9).stiffness(260).damping(22);
+
+<Animated.View layout={LAYOUT_TRANSITION} style={flexStyle}>
+```
+
+**Problem:** "It jumps all over the place." When adding a new wrapper, the entire tree reflows and everything shifts globally. The animation was too chaotic.
+
+**User feedback:** "no those animations are not it. it jumps all over the place. think about it. If i were u i would have no animations on resize because whenever u add a new wrapper EVERYTHING shifts around. have no css transiton for the actial resizing (if that's what is causing this) and then instead snap right to it."
+
+### Attempt 2: Snap-Then-Grow (Current)
+
+**What we're trying:**
+1. Remove all global layout transitions
+2. On press, instantly commit the new structure with `introConfig` (new screens at 0%)
+3. Enable animation mode
+4. Switch to `finalConfig` to trigger `flexGrow` spring animation
+
+**Current implementation:**
+
+```ts
+const handleActionPress = React.useCallback((action: LayoutAction) => {
+  const plan = buildLayoutActionPlan(committedConfig, action, nextScreenId);
+
+  // Phase 1: Set intro config (new screens at 0%)
+  setCommittedConfig(plan.finalConfig);
+  setWindowConfig(plan.introConfig);
+  setPreviewConfig(null);
+
+  // Phase 2: Multi-frame commit to ensure intro state paints
+  const frameOne = requestAnimationFrame(() => {
+    setAnimateWindowSizes(true);
+    const frameTwo = requestAnimationFrame(() => {
+      setWindowConfig(plan.finalConfig);  // Should trigger spring animation
+    });
+  });
+}, [committedConfig]);
+```
+
+**Expected behavior:**
+- Frame 1: Mount intro config (new structure, new screen at 0%)
+- Frame 2: Enable animation flag
+- Frame 3: Switch to final config, spring `flexGrow` from 0 to target
+
+**Problem:** Still not animating. User reports "it just snaps."
+
+**Possible issues:**
+1. React batching: The state updates might still be collapsing into a single render
+2. Web-specific: `react-native-reanimated`'s `withSpring` on `flexGrow` might not animate properly on web
+3. Timing: Even with nested `requestAnimationFrame`, the browser might not paint the intermediate state
+4. Reanimated worklet: The `useAnimatedStyle` might not be updating correctly on web
+
+## What We Know
+
+- The two-layer system works (hover preview, click commit)
+- The layout mutation logic works (correct tree transformations)
+- The intro/final config generation works (correct size values)
+- The multi-frame commit is implemented but not producing visible animation
+- Web is the primary target; iOS is secondary
+
+## Next Steps to Try
+
+1. **Force a paint**: Use `setTimeout` with a small delay instead of `requestAnimationFrame` to guarantee a paint
+2. **Web-specific animation**: Try CSS transitions on `flex-grow` via `className` instead of reanimated
+3. **Direct dimension animation**: Animate `width`/`height` instead of `flexGrow` (more expensive but more reliable)
+4. **React Native Animated**: Try the non-reanimated `Animated` API for web compatibility
+5. **Debug visibility**: Add console logs or visual indicators to verify each phase is actually happening

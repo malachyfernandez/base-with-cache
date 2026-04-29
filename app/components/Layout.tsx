@@ -1,6 +1,25 @@
 import React, { Children, isValidElement, ReactNode } from 'react';
-import { Pressable, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
+import { Platform, Pressable, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
 import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+
+type FlushSync = (callback: () => void) => void;
+
+let flushSyncOnWeb: FlushSync = (callback) => {
+  callback();
+};
+
+if (Platform.OS === 'web') {
+  try {
+    const reactDom = require('react-dom') as { flushSync?: FlushSync };
+    if (reactDom.flushSync) {
+      flushSyncOnWeb = reactDom.flushSync;
+    }
+  } catch {
+    flushSyncOnWeb = (callback) => {
+      callback();
+    };
+  }
+}
 
 const LayoutContext = React.createContext<{
   buttonIcon?: ReactNode;
@@ -185,6 +204,42 @@ const SIZE_SPRING = {
   mass: 0.9,
 };
 
+const WEB_ANIMATION_DURATION_MS = 280;
+const WEB_STAGE_DELAY_MS = 24;
+const WEB_TRANSITION_TOTAL_MS = WEB_ANIMATION_DURATION_MS + WEB_STAGE_DELAY_MS * 2;
+
+const debugLayout = (...args: unknown[]) => {
+  if (Platform.OS === 'web') {
+    console.log('[Layout]', ...args);
+  }
+};
+
+const scheduleOnWeb = (callback: () => void, delayMs: number) => {
+  if (Platform.OS === 'web') {
+    return window.setTimeout(callback, delayMs);
+  }
+
+  return requestAnimationFrame(callback);
+};
+
+const clearScheduledTask = (taskId: number) => {
+  if (Platform.OS === 'web') {
+    window.clearTimeout(taskId);
+    return;
+  }
+
+  cancelAnimationFrame(taskId);
+};
+
+const commitWebLayoutStage = (callback: () => void) => {
+  if (Platform.OS === 'web') {
+    flushSyncOnWeb(callback);
+    return;
+  }
+
+  callback();
+};
+
 const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
   const screenMap = new Map<string | number, ReactNode>();
 
@@ -201,87 +256,251 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
   const [previewConfig, setPreviewConfig] = React.useState<LayoutNode | null>(null);
   const [windowConfig, setWindowConfig] = React.useState(config);
   const [animateWindowSizes, setAnimateWindowSizes] = React.useState(false);
+  const [controlsConfig, setControlsConfig] = React.useState(config);
+  const [animateControlSizes, setAnimateControlSizes] = React.useState(false);
   const nextScreenIdRef = React.useRef(getNextScreenId(config));
-  const animationFrameRef = React.useRef<number | null>(null);
+  const animationFrameRefs = React.useRef<number[]>([]);
+  const suppressHoverOutUntilRef = React.useRef(0);
+  const hoveredActionKeyRef = React.useRef<string | null>(null);
+  const hoveredPreviewConfigRef = React.useRef<LayoutNode | null>(null);
+  const hoveredIntroConfigRef = React.useRef<LayoutNode | null>(null);
 
   React.useEffect(() => {
-    if (animationFrameRef.current !== null) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
-    }
+    animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
+    animationFrameRefs.current = [];
 
     setCommittedConfig(config);
     setPreviewConfig(null);
     setWindowConfig(config);
     setAnimateWindowSizes(false);
+    setControlsConfig(config);
+    setAnimateControlSizes(false);
     nextScreenIdRef.current = getNextScreenId(config);
+    suppressHoverOutUntilRef.current = 0;
+    hoveredActionKeyRef.current = null;
+    hoveredPreviewConfigRef.current = null;
+    hoveredIntroConfigRef.current = null;
   }, [config]);
 
   React.useEffect(() => {
     return () => {
-      if (animationFrameRef.current !== null) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
+      animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
+      animationFrameRefs.current = [];
     };
   }, []);
 
-  const activeConfig = previewConfig ?? windowConfig;
-  const activeVisibilityMap = React.useMemo(() => buildVisibilityMap(activeConfig), [activeConfig]);
-  const controlVisibilityMap = React.useMemo(() => buildVisibilityMap(committedConfig), [committedConfig]);
+  React.useEffect(() => {
+    if (Platform.OS !== 'web') {
+      return;
+    }
+
+    debugLayout('state', {
+      animateWindowSizes,
+      animateControlSizes,
+      preview: previewConfig ? summarizeLayout(previewConfig) : null,
+      window: summarizeLayout(windowConfig),
+      controls: summarizeLayout(controlsConfig),
+      committed: summarizeLayout(committedConfig),
+    });
+  }, [animateControlSizes, animateWindowSizes, committedConfig, controlsConfig, previewConfig, windowConfig]);
+
+  const activeVisibilityMap = React.useMemo(() => buildVisibilityMap(windowConfig), [windowConfig]);
+  const controlVisibilityMap = React.useMemo(() => buildVisibilityMap(controlsConfig), [controlsConfig]);
+
+  const animateControlsToConfig = React.useCallback(
+    (nextConfig: LayoutNode) => {
+      commitWebLayoutStage(() => {
+        setAnimateControlSizes(false);
+        setControlsConfig(committedConfig);
+      });
+
+      const stageOne = scheduleOnWeb(() => {
+        debugLayout('controls stage 1 -> enable animation');
+        commitWebLayoutStage(() => {
+          setAnimateControlSizes(true);
+        });
+
+        const stageTwo = scheduleOnWeb(() => {
+          debugLayout('controls stage 2 -> commit control config');
+          commitWebLayoutStage(() => {
+            setControlsConfig(nextConfig);
+          });
+          animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== stageTwo);
+        }, WEB_STAGE_DELAY_MS);
+
+        animationFrameRefs.current.push(stageTwo);
+        animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== stageOne);
+      }, WEB_STAGE_DELAY_MS);
+
+      const cleanup = scheduleOnWeb(() => {
+        debugLayout('controls complete -> disable animation flag');
+        commitWebLayoutStage(() => {
+          setAnimateControlSizes(false);
+        });
+        animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== cleanup);
+      }, WEB_TRANSITION_TOTAL_MS);
+
+      animationFrameRefs.current.push(stageOne, cleanup);
+    },
+    [committedConfig],
+  );
 
   const handleActionHoverIn = React.useCallback(
     (action: LayoutAction) => {
-      const plan = buildLayoutActionPlan(committedConfig, action, nextScreenIdRef.current);
-
-      if (animationFrameRef.current !== null) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
+      if (hoveredActionKeyRef.current === action.key) {
+        return;
       }
 
-      setAnimateWindowSizes(false);
-      setPreviewConfig(plan.finalConfig);
+      const plan = buildLayoutActionPlan(committedConfig, action, nextScreenIdRef.current);
+
+      debugLayout('hover in', action, summarizeLayout(plan.finalConfig));
+
+      animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
+      animationFrameRefs.current = [];
+
+      hoveredActionKeyRef.current = action.key;
+      hoveredPreviewConfigRef.current = plan.finalConfig;
+      hoveredIntroConfigRef.current = plan.introConfig;
+      commitWebLayoutStage(() => {
+        setAnimateWindowSizes(false);
+        setWindowConfig(plan.introConfig);
+        setPreviewConfig(plan.finalConfig);
+      });
+
+      const frameOne = scheduleOnWeb(() => {
+        debugLayout('hover stage 1 -> enable animation');
+        commitWebLayoutStage(() => {
+          setAnimateWindowSizes(true);
+        });
+        const frameTwo = scheduleOnWeb(() => {
+          debugLayout('hover stage 2 -> commit preview window config');
+          commitWebLayoutStage(() => {
+            setWindowConfig(plan.finalConfig);
+          });
+          animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameTwo);
+        }, WEB_STAGE_DELAY_MS);
+
+        animationFrameRefs.current.push(frameTwo);
+        animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameOne);
+      }, WEB_STAGE_DELAY_MS);
+
+      animationFrameRefs.current.push(frameOne);
     },
     [committedConfig],
   );
 
   const handleActionHoverOut = React.useCallback(() => {
-    if (animationFrameRef.current !== null) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
+    if (Platform.OS === 'web' && Date.now() < suppressHoverOutUntilRef.current) {
+      debugLayout('hover out ignored during animation window');
+      return;
     }
 
-    setAnimateWindowSizes(false);
-    setWindowConfig(committedConfig);
-    setPreviewConfig(null);
+    debugLayout('hover out');
+
+    animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
+    animationFrameRefs.current = [];
+    hoveredActionKeyRef.current = null;
+    hoveredPreviewConfigRef.current = null;
+
+    const hoveredIntroConfig = hoveredIntroConfigRef.current;
+    hoveredIntroConfigRef.current = null;
+
+    if (!hoveredIntroConfig) {
+      commitWebLayoutStage(() => {
+        setAnimateWindowSizes(false);
+        setPreviewConfig(null);
+        setWindowConfig(committedConfig);
+      });
+      return;
+    }
+
+    commitWebLayoutStage(() => {
+      setAnimateWindowSizes(true);
+      setWindowConfig(hoveredIntroConfig);
+    });
+
+    const clearAnimationTask = scheduleOnWeb(() => {
+      debugLayout('hover out complete -> disable animation flag');
+      commitWebLayoutStage(() => {
+        setAnimateWindowSizes(false);
+        setPreviewConfig(null);
+        setWindowConfig(committedConfig);
+      });
+      animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== clearAnimationTask);
+    }, WEB_ANIMATION_DURATION_MS);
+
+    animationFrameRefs.current.push(clearAnimationTask);
   }, [committedConfig]);
 
   const handleActionPress = React.useCallback((action: LayoutAction) => {
     const nextScreenId = nextScreenIdRef.current;
     const plan = buildLayoutActionPlan(committedConfig, action, nextScreenId);
 
-    if (animationFrameRef.current !== null) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
+    if (hoveredActionKeyRef.current === action.key) {
+      debugLayout('press -> commit existing hover preview without re-animation');
+      suppressHoverOutUntilRef.current = Date.now() + 120;
+      hoveredActionKeyRef.current = null;
+      hoveredPreviewConfigRef.current = null;
+      hoveredIntroConfigRef.current = null;
+      animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
+      animationFrameRefs.current = [];
+      animateControlsToConfig(plan.finalConfig);
+      commitWebLayoutStage(() => {
+        setAnimateWindowSizes(false);
+        setCommittedConfig(plan.finalConfig);
+        setWindowConfig(plan.finalConfig);
+        setPreviewConfig(null);
+      });
+      nextScreenIdRef.current = nextScreenId + 1;
+      return;
     }
 
-    setAnimateWindowSizes(false);
-    setCommittedConfig(plan.finalConfig);
-    setWindowConfig(plan.introConfig);
-    nextScreenIdRef.current = nextScreenId + 1;
-    setPreviewConfig(null);
+    suppressHoverOutUntilRef.current = Date.now() + WEB_ANIMATION_DURATION_MS + 120;
+    hoveredActionKeyRef.current = null;
+    hoveredPreviewConfigRef.current = null;
+    hoveredIntroConfigRef.current = null;
 
-    animationFrameRef.current = requestAnimationFrame(() => {
-      setAnimateWindowSizes(true);
-      setWindowConfig(plan.finalConfig);
-      animationFrameRef.current = null;
+    debugLayout('press', action, {
+      intro: summarizeLayout(plan.introConfig),
+      final: summarizeLayout(plan.finalConfig),
     });
+
+    animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
+    animationFrameRefs.current = [];
+    animateControlsToConfig(plan.finalConfig);
+
+    commitWebLayoutStage(() => {
+      setAnimateWindowSizes(false);
+      setCommittedConfig(plan.finalConfig);
+      setWindowConfig(plan.introConfig);
+      setPreviewConfig(null);
+    });
+    nextScreenIdRef.current = nextScreenId + 1;
+
+    const frameOne = scheduleOnWeb(() => {
+      debugLayout('press stage 1 -> enable animation');
+      commitWebLayoutStage(() => {
+        setAnimateWindowSizes(true);
+      });
+      const frameTwo = scheduleOnWeb(() => {
+        debugLayout('press stage 2 -> commit final window config');
+        commitWebLayoutStage(() => {
+          setWindowConfig(plan.finalConfig);
+        });
+        animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameTwo);
+      }, WEB_STAGE_DELAY_MS);
+
+      animationFrameRefs.current.push(frameTwo);
+      animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameOne);
+    }, WEB_STAGE_DELAY_MS);
+    animationFrameRefs.current.push(frameOne);
   }, [committedConfig]);
 
   return (
     <View style={{ flex: 1, backgroundColor: oklchToCssColor(resolvedTheme.canvasColor) }}>
       <LayoutContext.Provider value={{ buttonIcon, layerMode: 'window' }}>
         <LayoutRenderer
-          node={activeConfig}
+          node={windowConfig}
           screenMap={screenMap}
           theme={resolvedTheme}
           visibilityMap={activeVisibilityMap}
@@ -302,14 +521,14 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
           }}
         >
           <LayoutRenderer
-            node={committedConfig}
+            node={controlsConfig}
             screenMap={screenMap}
             theme={resolvedTheme}
             visibilityMap={controlVisibilityMap}
             depth={0}
             path="root"
             layerMode="controls"
-            animateSizes={false}
+            animateSizes={animateControlSizes}
           />
         </LayoutContext.Provider>
       </View>
@@ -345,6 +564,7 @@ type RendererProps = {
 const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, layerMode, animateSizes }: RendererProps) => {
   const panelColor = shiftLightness(theme.panelColor, depth * theme.contrastStep);
   const buttonColor = shiftLightness(theme.buttonColor, depth * theme.contrastStep);
+  const isWeb = Platform.OS === 'web';
   const targetFlexGrow = getFlexGrowValue(node.size);
   const flexGrow = useSharedValue(targetFlexGrow);
 
@@ -363,16 +583,24 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
     flexGrow: flexGrow.value,
   }));
 
+  const webFlexStyle = React.useMemo<WebFlexTransitionStyle>(
+    () =>
+      animateSizes
+        ? { ...WEB_FLEX_GROW_TRANSITION_STYLE, flexGrow: targetFlexGrow }
+        : { flexGrow: targetFlexGrow },
+    [animateSizes, targetFlexGrow],
+  );
+
   const flexStyle = React.useMemo(
-    () => [BASE_FLEX_STYLE, animatedFlexStyle],
-    [animatedFlexStyle],
+    () => [BASE_FLEX_STYLE, isWeb ? webFlexStyle : animatedFlexStyle],
+    [animatedFlexStyle, isWeb, webFlexStyle],
   );
 
   if (node.type === 'screen') {
     const content = screenMap.get(node.screenId);
 
     return (
-      <Animated.View style={flexStyle}>
+      <FlexContainer style={flexStyle}>
         <ContainerChrome
           path={path}
           theme={theme}
@@ -395,14 +623,14 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
             <View style={{ flex: 1 }} />
           )}
         </ContainerChrome>
-      </Animated.View>
+      </FlexContainer>
     );
   }
 
   const isRow = node.direction === 'row';
 
   return (
-    <Animated.View style={flexStyle}>
+    <FlexContainer style={flexStyle}>
       <ContainerChrome
         path={path}
         theme={theme}
@@ -439,7 +667,7 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
           ))}
         </View>
       </ContainerChrome>
-    </Animated.View>
+    </FlexContainer>
   );
 };
 
@@ -447,6 +675,22 @@ const BASE_FLEX_STYLE = {
   flexBasis: 0,
   flexShrink: 1,
 } as const;
+
+type WebFlexTransitionStyle = ViewStyle & {
+  transitionProperty?: string;
+  transitionDuration?: string;
+  transitionTimingFunction?: string;
+  willChange?: string;
+};
+
+const WEB_FLEX_GROW_TRANSITION_STYLE: WebFlexTransitionStyle = {
+  transitionProperty: 'flex-grow',
+  transitionDuration: '280ms',
+  transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
+  willChange: 'flex-grow',
+};
+
+const FlexContainer: React.ComponentType<any> = Platform.OS === 'web' ? View : Animated.View;
 
 const getFlexGrowValue = (size?: string | number) => {
   if (size === undefined) {
@@ -590,7 +834,6 @@ const EdgeButton = ({
       }}
       onPressOut={() => {
         setHovered(false);
-        onActionHoverOut?.();
       }}
       onPress={() => {
         onActionPress?.(action);
@@ -677,7 +920,6 @@ const SplitGap = ({
           }}
           onPressOut={() => {
             setHovered(false);
-            onActionHoverOut?.();
           }}
           onPress={() => {
             onActionPress?.(action);
@@ -716,7 +958,6 @@ const SplitGap = ({
         }}
         onPressOut={() => {
           setHovered(false);
-          onActionHoverOut?.();
         }}
         onPress={() => {
           onActionPress?.(action);
@@ -1233,6 +1474,14 @@ const updateNodeBySegments = (node: LayoutNode, segments: number[], updater: (cu
 };
 
 const formatPercent = (value: number) => `${Number(value.toFixed(3))}%`;
+
+const summarizeLayout = (node: LayoutNode): string => {
+  if (node.type === 'screen') {
+    return `screen(${String(node.screenId)}:${String(node.size ?? 'auto')})`;
+  }
+
+  return `${node.direction}[${node.children.map((child) => summarizeLayout(child)).join(',')}]`;
+};
 
 const getNextScreenId = (node: LayoutNode) => {
   let maxId = 0;
