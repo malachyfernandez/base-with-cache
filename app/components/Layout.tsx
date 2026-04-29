@@ -24,6 +24,7 @@ if (Platform.OS === 'web') {
 const LayoutContext = React.createContext<{
   buttonIcon?: ReactNode;
   layerMode: LayerMode;
+  hoveredActionKey?: string | null;
   onActionHoverIn?: (action: LayoutAction) => void;
   onActionHoverOut?: () => void;
   onActionPress?: (action: LayoutAction) => void;
@@ -258,6 +259,7 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
   const [animateWindowSizes, setAnimateWindowSizes] = React.useState(false);
   const [controlsConfig, setControlsConfig] = React.useState(config);
   const [animateControlSizes, setAnimateControlSizes] = React.useState(false);
+  const [hoveredActionKey, setHoveredActionKey] = React.useState<string | null>(null);
   const nextScreenIdRef = React.useRef(getNextScreenId(config));
   const animationFrameRefs = React.useRef<number[]>([]);
   const suppressHoverOutUntilRef = React.useRef(0);
@@ -358,6 +360,7 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
       animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
       animationFrameRefs.current = [];
 
+      setHoveredActionKey(action.key);
       hoveredActionKeyRef.current = action.key;
       hoveredPreviewConfigRef.current = plan.finalConfig;
       hoveredIntroConfigRef.current = plan.introConfig;
@@ -399,8 +402,8 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
 
     animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
     animationFrameRefs.current = [];
+    setHoveredActionKey(null);
     hoveredActionKeyRef.current = null;
-    hoveredPreviewConfigRef.current = null;
 
     const hoveredIntroConfig = hoveredIntroConfigRef.current;
     hoveredIntroConfigRef.current = null;
@@ -439,6 +442,7 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
     if (hoveredActionKeyRef.current === action.key) {
       debugLayout('press -> commit existing hover preview without re-animation');
       suppressHoverOutUntilRef.current = Date.now() + 120;
+      setHoveredActionKey(null);
       hoveredActionKeyRef.current = null;
       hoveredPreviewConfigRef.current = null;
       hoveredIntroConfigRef.current = null;
@@ -456,6 +460,7 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
     }
 
     suppressHoverOutUntilRef.current = Date.now() + WEB_ANIMATION_DURATION_MS + 120;
+    setHoveredActionKey(null);
     hoveredActionKeyRef.current = null;
     hoveredPreviewConfigRef.current = null;
     hoveredIntroConfigRef.current = null;
@@ -515,6 +520,7 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
           value={{
             buttonIcon,
             layerMode: 'controls',
+            hoveredActionKey,
             onActionHoverIn: handleActionHoverIn,
             onActionHoverOut: handleActionHoverOut,
             onActionPress: handleActionPress,
@@ -795,7 +801,7 @@ const EdgeButton = ({
   color: OKLCHColor;
 }) => {
   const [hovered, setHovered] = React.useState(false);
-  const { buttonIcon, onActionHoverIn, onActionHoverOut, onActionPress } = React.useContext(LayoutContext);
+  const { buttonIcon, hoveredActionKey: globalHoveredKey, onActionHoverIn, onActionHoverOut, onActionPress } = React.useContext(LayoutContext);
 
   if (!active) {
     return null;
@@ -807,12 +813,21 @@ const EdgeButton = ({
   const displayColor = hovered ? { ...color, l: Math.min(1, color.l + theme.hoverBrightness) } : color;
   const backgroundColor = oklchToCssColor(displayColor);
   const action: LayoutAction = { type: 'edge', key: `${path}:edge:${side}`, path, side };
+  const isDimmed = globalHoveredKey !== null && globalHoveredKey !== action.key;
 
   const baseStyle = {
     position: 'absolute' as const,
     [side]: 0,
     borderRadius: thickness / 2,
     backgroundColor,
+    opacity: isDimmed ? 0 : 1,
+    ...(Platform.OS === 'web'
+      ? {
+          transitionProperty: 'opacity',
+          transitionDuration: '150ms',
+          transitionTimingFunction: 'ease',
+        }
+      : {}),
   };
 
   const extraStyle = theme.buttonStyle;
@@ -877,7 +892,7 @@ const SplitGap = ({
   const [hovered, setHovered] = React.useState(false);
   const full = theme.gapWidth;
   const half = full * theme.inactiveButtonThicknessRatio;
-  const { buttonIcon, onActionHoverIn, onActionHoverOut, onActionPress } = React.useContext(LayoutContext);
+  const { buttonIcon, hoveredActionKey: globalHoveredKey, onActionHoverIn, onActionHoverOut, onActionPress } = React.useContext(LayoutContext);
 
   const spacerStyle = direction === 'row' ? { width: active ? full : half } : { height: active ? full : half };
 
@@ -891,12 +906,25 @@ const SplitGap = ({
 
   const displayColor = hovered ? { ...buttonColor, l: Math.min(1, buttonColor.l + theme.hoverBrightness) } : buttonColor;
   const backgroundColor = oklchToCssColor(displayColor);
-  const baseButtonStyle = { borderRadius: full / 2, backgroundColor };
-  const extraStyle = theme.buttonStyle;
   const action: LayoutAction = { type: 'split', key: `${path}:split:${index}`, path, index, direction };
+  const isDimmed = globalHoveredKey !== null && globalHoveredKey !== action.key;
+
+  const baseButtonStyle = {
+    borderRadius: full / 2,
+    backgroundColor,
+    opacity: isDimmed ? 0 : 1,
+    ...(Platform.OS === 'web'
+      ? {
+          transitionProperty: 'opacity',
+          transitionDuration: '150ms',
+          transitionTimingFunction: 'ease',
+        }
+      : {}),
+  };
+  const extraStyle = theme.buttonStyle;
 
   const iconWrapper = buttonIcon ? (
-    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', opacity: isDimmed ? 0 : 1 }}>
       {buttonIcon}
     </View>
   ) : null;
