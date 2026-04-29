@@ -37,6 +37,7 @@ const MainPage: React.FC = () => {
         <View style={{ width: '100%', height: '100%', padding: 24, backgroundColor: 'rgb(20, 20, 20)' }}>
             <Layout
                 config={exampleConfig}
+                hoverDelayMs={400}
                 // buttonIcon={<CheckIcon />}
                 theme={{
                     borderWidth: 30,

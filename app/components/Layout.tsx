@@ -97,6 +97,7 @@ type LayoutProps = {
   children: ReactNode;
   theme?: Partial<LayoutTheme>;
   buttonIcon?: ReactNode;
+  hoverDelayMs?: number;
 };
 
 type ScreenSlotProps = {
@@ -242,7 +243,7 @@ const commitWebLayoutStage = (callback: () => void) => {
   callback();
 };
 
-const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
+const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: LayoutProps) => {
   const screenMap = new Map<string | number, ReactNode>();
 
   Children.forEach(children, (child) => {
@@ -366,34 +367,39 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
       setAnimationPhase('expand');
       setHoveredActionKey(action.key);
       hoveredActionKeyRef.current = action.key;
-      hoveredPreviewConfigRef.current = plan.finalConfig;
-      hoveredIntroConfigRef.current = plan.introConfig;
-      commitWebLayoutStage(() => {
-        setAnimateWindowSizes(false);
-        setWindowConfig(plan.introConfig);
-        setPreviewConfig(plan.finalConfig);
-      });
 
-      const frameOne = scheduleOnWeb(() => {
-        debugLayout('hover stage 1 -> enable animation');
+      const delayedFrame = scheduleOnWeb(() => {
+        hoveredPreviewConfigRef.current = plan.finalConfig;
+        hoveredIntroConfigRef.current = plan.introConfig;
         commitWebLayoutStage(() => {
-          setAnimateWindowSizes(true);
+          setAnimateWindowSizes(false);
+          setWindowConfig(plan.introConfig);
+          setPreviewConfig(plan.finalConfig);
         });
-        const frameTwo = scheduleOnWeb(() => {
-          debugLayout('hover stage 2 -> commit preview window config');
+
+        const frameOne = scheduleOnWeb(() => {
+          debugLayout('hover stage 1 -> enable animation');
           commitWebLayoutStage(() => {
-            setWindowConfig(plan.finalConfig);
+            setAnimateWindowSizes(true);
           });
-          animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameTwo);
+          const frameTwo = scheduleOnWeb(() => {
+            debugLayout('hover stage 2 -> commit preview window config');
+            commitWebLayoutStage(() => {
+              setWindowConfig(plan.finalConfig);
+            });
+            animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameTwo);
+          }, WEB_STAGE_DELAY_MS);
+
+          animationFrameRefs.current.push(frameTwo);
+          animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameOne);
         }, WEB_STAGE_DELAY_MS);
 
-        animationFrameRefs.current.push(frameTwo);
-        animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameOne);
-      }, WEB_STAGE_DELAY_MS);
+        animationFrameRefs.current.push(frameOne);
+      }, hoverDelayMs);
 
-      animationFrameRefs.current.push(frameOne);
+      animationFrameRefs.current.push(delayedFrame);
     },
-    [committedConfig],
+    [committedConfig, hoverDelayMs],
   );
 
   const handleActionHoverOut = React.useCallback(() => {
