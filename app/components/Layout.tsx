@@ -268,6 +268,7 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
   const hoveredActionKeyRef = React.useRef<string | null>(null);
   const hoveredPreviewConfigRef = React.useRef<LayoutNode | null>(null);
   const hoveredIntroConfigRef = React.useRef<LayoutNode | null>(null);
+  const skipNextHoverOutRef = React.useRef(false);
 
   React.useEffect(() => {
     animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
@@ -401,6 +402,12 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
       return;
     }
 
+    if (skipNextHoverOutRef.current) {
+      debugLayout('hover out ignored: layout already committed from press');
+      skipNextHoverOutRef.current = false;
+      return;
+    }
+
     debugLayout('hover out');
 
     animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
@@ -446,6 +453,7 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
     if (hoveredActionKeyRef.current === action.key) {
       debugLayout('press -> commit existing hover preview without re-animation');
       suppressHoverOutUntilRef.current = Date.now() + 120;
+      skipNextHoverOutRef.current = true;
       setAnimationPhase('expand');
       setHoveredActionKey(null);
       hoveredActionKeyRef.current = null;
