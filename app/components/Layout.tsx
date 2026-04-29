@@ -25,6 +25,7 @@ const LayoutContext = React.createContext<{
   buttonIcon?: ReactNode;
   layerMode: LayerMode;
   hoveredActionKey?: string | null;
+  animationPhase?: 'expand' | 'contract' | null;
   onActionHoverIn?: (action: LayoutAction) => void;
   onActionHoverOut?: () => void;
   onActionPress?: (action: LayoutAction) => void;
@@ -260,6 +261,7 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
   const [controlsConfig, setControlsConfig] = React.useState(config);
   const [animateControlSizes, setAnimateControlSizes] = React.useState(false);
   const [hoveredActionKey, setHoveredActionKey] = React.useState<string | null>(null);
+  const [animationPhase, setAnimationPhase] = React.useState<'expand' | 'contract' | null>(null);
   const nextScreenIdRef = React.useRef(getNextScreenId(config));
   const animationFrameRefs = React.useRef<number[]>([]);
   const suppressHoverOutUntilRef = React.useRef(0);
@@ -360,6 +362,7 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
       animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
       animationFrameRefs.current = [];
 
+      setAnimationPhase('expand');
       setHoveredActionKey(action.key);
       hoveredActionKeyRef.current = action.key;
       hoveredPreviewConfigRef.current = plan.finalConfig;
@@ -402,6 +405,7 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
 
     animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
     animationFrameRefs.current = [];
+    setAnimationPhase('contract');
     setHoveredActionKey(null);
     hoveredActionKeyRef.current = null;
 
@@ -442,6 +446,7 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
     if (hoveredActionKeyRef.current === action.key) {
       debugLayout('press -> commit existing hover preview without re-animation');
       suppressHoverOutUntilRef.current = Date.now() + 120;
+      setAnimationPhase('expand');
       setHoveredActionKey(null);
       hoveredActionKeyRef.current = null;
       hoveredPreviewConfigRef.current = null;
@@ -460,6 +465,7 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
     }
 
     suppressHoverOutUntilRef.current = Date.now() + WEB_ANIMATION_DURATION_MS + 120;
+    setAnimationPhase('expand');
     setHoveredActionKey(null);
     hoveredActionKeyRef.current = null;
     hoveredPreviewConfigRef.current = null;
@@ -503,7 +509,7 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
 
   return (
     <View style={{ flex: 1, backgroundColor: oklchToCssColor(resolvedTheme.canvasColor) }}>
-      <LayoutContext.Provider value={{ buttonIcon, layerMode: 'window' }}>
+      <LayoutContext.Provider value={{ buttonIcon, layerMode: 'window', animationPhase }}>
         <LayoutRenderer
           node={windowConfig}
           screenMap={screenMap}
@@ -521,6 +527,7 @@ const Layout = ({ config, children, theme, buttonIcon }: LayoutProps) => {
             buttonIcon,
             layerMode: 'controls',
             hoveredActionKey,
+            animationPhase,
             onActionHoverIn: handleActionHoverIn,
             onActionHoverOut: handleActionHoverOut,
             onActionPress: handleActionPress,
@@ -571,6 +578,7 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
   const panelColor = shiftLightness(theme.panelColor, depth * theme.contrastStep);
   const buttonColor = shiftLightness(theme.buttonColor, depth * theme.contrastStep);
   const isWeb = Platform.OS === 'web';
+  const { animationPhase } = React.useContext(LayoutContext);
   const targetFlexGrow = getFlexGrowValue(node.size);
   const flexGrow = useSharedValue(targetFlexGrow);
 
@@ -590,11 +598,14 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
   }));
 
   const webFlexStyle = React.useMemo<WebFlexTransitionStyle>(
-    () =>
-      animateSizes
-        ? { ...WEB_FLEX_GROW_TRANSITION_STYLE, flexGrow: targetFlexGrow }
-        : { flexGrow: targetFlexGrow },
-    [animateSizes, targetFlexGrow],
+    () => {
+      if (!animateSizes) return { flexGrow: targetFlexGrow };
+      const timingFunction = animationPhase === 'contract'
+        ? 'cubic-bezier(0.64, 0, 0.78, 1)'
+        : 'cubic-bezier(0.22, 1, 0.36, 1)';
+      return { ...WEB_FLEX_GROW_TRANSITION_STYLE, transitionTimingFunction: timingFunction, flexGrow: targetFlexGrow };
+    },
+    [animateSizes, targetFlexGrow, animationPhase],
   );
 
   const flexStyle = React.useMemo(

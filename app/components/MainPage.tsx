@@ -43,7 +43,7 @@ const MainPage: React.FC = () => {
                     gapWidth: 30,
                     inactiveButtonThicknessRatio: 0.3,
                     borderRadius: 60,
-                    buttonSpanRatio: 1,
+                    buttonSpanRatio: 0.7,
                     canvasColor: { l: 0.18, c: 0, h: 0 },
                     panelColor: { l: 0.3, c: 0, h: 0 },
                       buttonColor: { l: 0.35, c: 0.03, h: 320 },
