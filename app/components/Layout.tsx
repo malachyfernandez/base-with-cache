@@ -26,10 +26,11 @@ const LayoutContext = React.createContext<{
   layerMode: LayerMode;
   hoveredActionKey?: string | null;
   animationPhase?: 'expand' | 'contract' | null;
+  animationDurationMs?: number;
   onActionHoverIn?: (action: LayoutAction) => void;
   onActionHoverOut?: () => void;
   onActionPress?: (action: LayoutAction) => void;
-}>({ layerMode: 'window' });
+}>({ layerMode: 'window', animationDurationMs: 280 });
 
 /* ───────── types ───────── */
 
@@ -263,13 +264,24 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
   const [animateControlSizes, setAnimateControlSizes] = React.useState(false);
   const [hoveredActionKey, setHoveredActionKey] = React.useState<string | null>(null);
   const [animationPhase, setAnimationPhase] = React.useState<'expand' | 'contract' | null>(null);
+  const [animationDurationMs, setAnimationDurationMs] = React.useState(280);
   const nextScreenIdRef = React.useRef(getNextScreenId(config));
   const animationFrameRefs = React.useRef<number[]>([]);
   const suppressHoverOutUntilRef = React.useRef(0);
   const hoveredActionKeyRef = React.useRef<string | null>(null);
   const hoveredPreviewConfigRef = React.useRef<LayoutNode | null>(null);
   const hoveredIntroConfigRef = React.useRef<LayoutNode | null>(null);
+  const hoveredDurationRef = React.useRef(280);
   const skipNextHoverOutRef = React.useRef(false);
+  const containerSizeRef = React.useRef({ width: 1000, height: 600 });
+
+  const resolveAnimationDuration = React.useCallback((fromConfig: LayoutNode, toConfig: LayoutNode) => {
+    const { width, height } = containerSizeRef.current;
+    const fromRects = computeScreenRects(fromConfig, { x: 0, y: 0, width, height });
+    const toRects = computeScreenRects(toConfig, { x: 0, y: 0, width, height });
+    const distance = computeMaxScreenDistance(fromRects, toRects);
+    return getScaledAnimationDuration(distance);
+  }, []);
 
   React.useEffect(() => {
     animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
@@ -314,7 +326,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
   const controlVisibilityMap = React.useMemo(() => buildVisibilityMap(controlsConfig), [controlsConfig]);
 
   const animateControlsToConfig = React.useCallback(
-    (nextConfig: LayoutNode) => {
+    (nextConfig: LayoutNode, durationMs: number) => {
       commitWebLayoutStage(() => {
         setAnimateControlSizes(false);
         setControlsConfig(committedConfig);
@@ -344,7 +356,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
           setAnimateControlSizes(false);
         });
         animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== cleanup);
-      }, WEB_TRANSITION_TOTAL_MS);
+      }, durationMs + WEB_STAGE_DELAY_MS * 2);
 
       animationFrameRefs.current.push(stageOne, cleanup);
     },
@@ -358,8 +370,11 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
       }
 
       const plan = buildLayoutActionPlan(committedConfig, action, nextScreenIdRef.current);
+      const durationMs = resolveAnimationDuration(committedConfig, plan.finalConfig);
+      hoveredDurationRef.current = durationMs;
+      setAnimationDurationMs(durationMs);
 
-      debugLayout('hover in', action, summarizeLayout(plan.finalConfig));
+      debugLayout('hover in', action, summarizeLayout(plan.finalConfig), { durationMs });
 
       animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
       animationFrameRefs.current = [];
@@ -399,7 +414,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
 
       animationFrameRefs.current.push(delayedFrame);
     },
-    [committedConfig, hoverDelayMs],
+    [committedConfig, hoverDelayMs, resolveAnimationDuration],
   );
 
   const handleActionHoverOut = React.useCallback(() => {
@@ -434,6 +449,9 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
       return;
     }
 
+    const durationMs = hoveredDurationRef.current;
+    setAnimationDurationMs(durationMs);
+
     commitWebLayoutStage(() => {
       setAnimateWindowSizes(true);
       setWindowConfig(hoveredIntroConfig);
@@ -447,10 +465,10 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
         setWindowConfig(committedConfig);
       });
       animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== clearAnimationTask);
-    }, WEB_ANIMATION_DURATION_MS);
+    }, durationMs);
 
     animationFrameRefs.current.push(clearAnimationTask);
-  }, [committedConfig]);
+  }, [committedConfig, resolveAnimationDuration]);
 
   const handleActionPress = React.useCallback((action: LayoutAction) => {
     const nextScreenId = nextScreenIdRef.current;
@@ -458,6 +476,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
 
     if (hoveredActionKeyRef.current === action.key) {
       debugLayout('press -> commit existing hover preview without re-animation');
+      const controlsDuration = resolveAnimationDuration(committedConfig, plan.finalConfig);
       suppressHoverOutUntilRef.current = Date.now() + 120;
       skipNextHoverOutRef.current = true;
       setAnimationPhase('expand');
@@ -467,7 +486,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
       hoveredIntroConfigRef.current = null;
       animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
       animationFrameRefs.current = [];
-      animateControlsToConfig(plan.finalConfig);
+      animateControlsToConfig(plan.finalConfig, controlsDuration);
       commitWebLayoutStage(() => {
         setAnimateWindowSizes(false);
         setCommittedConfig(plan.finalConfig);
@@ -478,7 +497,10 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
       return;
     }
 
-    suppressHoverOutUntilRef.current = Date.now() + WEB_ANIMATION_DURATION_MS + 120;
+    const windowDuration = resolveAnimationDuration(committedConfig, plan.finalConfig);
+    const controlsDuration = resolveAnimationDuration(committedConfig, plan.finalConfig);
+    setAnimationDurationMs(windowDuration);
+    suppressHoverOutUntilRef.current = Date.now() + windowDuration + 120;
     setAnimationPhase('expand');
     setHoveredActionKey(null);
     hoveredActionKeyRef.current = null;
@@ -488,11 +510,13 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
     debugLayout('press', action, {
       intro: summarizeLayout(plan.introConfig),
       final: summarizeLayout(plan.finalConfig),
+      windowDuration,
+      controlsDuration,
     });
 
     animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
     animationFrameRefs.current = [];
-    animateControlsToConfig(plan.finalConfig);
+    animateControlsToConfig(plan.finalConfig, controlsDuration);
 
     commitWebLayoutStage(() => {
       setAnimateWindowSizes(false);
@@ -519,11 +543,17 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
       animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameOne);
     }, WEB_STAGE_DELAY_MS);
     animationFrameRefs.current.push(frameOne);
-  }, [committedConfig]);
+  }, [committedConfig, resolveAnimationDuration]);
 
   return (
-    <View style={{ flex: 1, backgroundColor: oklchToCssColor(resolvedTheme.canvasColor) }}>
-      <LayoutContext.Provider value={{ buttonIcon, layerMode: 'window', animationPhase }}>
+    <View
+      style={{ flex: 1, backgroundColor: oklchToCssColor(resolvedTheme.canvasColor) }}
+      onLayout={(event) => {
+        const { width, height } = event.nativeEvent.layout;
+        containerSizeRef.current = { width, height };
+      }}
+    >
+      <LayoutContext.Provider value={{ buttonIcon, layerMode: 'window', animationPhase, animationDurationMs }}>
         <LayoutRenderer
           node={windowConfig}
           screenMap={screenMap}
@@ -542,6 +572,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
             layerMode: 'controls',
             hoveredActionKey,
             animationPhase,
+            animationDurationMs,
             onActionHoverIn: handleActionHoverIn,
             onActionHoverOut: handleActionHoverOut,
             onActionPress: handleActionPress,
@@ -592,7 +623,7 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
   const panelColor = shiftLightness(theme.panelColor, depth * theme.contrastStep);
   const buttonColor = shiftLightness(theme.buttonColor, depth * theme.contrastStep);
   const isWeb = Platform.OS === 'web';
-  const { animationPhase } = React.useContext(LayoutContext);
+  const { animationPhase, animationDurationMs } = React.useContext(LayoutContext);
   const targetFlexGrow = getFlexGrowValue(node.size);
   const flexGrow = useSharedValue(targetFlexGrow);
 
@@ -617,9 +648,15 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
       const timingFunction = animationPhase === 'contract'
         ? 'cubic-bezier(0.64, 0, 0.78, 1)'
         : 'cubic-bezier(0.22, 1, 0.36, 1)';
-      return { ...WEB_FLEX_GROW_TRANSITION_STYLE, transitionTimingFunction: timingFunction, flexGrow: targetFlexGrow };
+      return {
+        transitionProperty: 'flex-grow',
+        transitionDuration: `${animationDurationMs ?? 280}ms`,
+        transitionTimingFunction: timingFunction,
+        willChange: 'flex-grow',
+        flexGrow: targetFlexGrow,
+      };
     },
-    [animateSizes, targetFlexGrow, animationPhase],
+    [animateSizes, targetFlexGrow, animationPhase, animationDurationMs],
   );
 
   const flexStyle = React.useMemo(
@@ -730,6 +767,60 @@ const getFlexGrowValue = (size?: string | number) => {
 
   return Math.max(parseSizeValue(size), 0);
 };
+
+const VELOCITY_PX_PER_MS = 2.0;
+const MIN_ANIMATION_DURATION_MS = 120;
+const MAX_ANIMATION_DURATION_MS = 600;
+
+type PixelRect = { x: number; y: number; width: number; height: number };
+
+function computeScreenRects(node: LayoutNode, rect: PixelRect): Map<string | number, PixelRect> {
+  const result = new Map<string | number, PixelRect>();
+  if (node.type === 'screen') {
+    result.set(node.screenId, rect);
+    return result;
+  }
+  const isRow = node.direction === 'row';
+  const totalFlex = node.children.reduce((sum, child) => sum + getFlexGrowValue(child.size), 0);
+  let offset = 0;
+  for (const child of node.children) {
+    const flex = getFlexGrowValue(child.size);
+    const ratio = totalFlex > 0 ? flex / totalFlex : 1 / node.children.length;
+    let childRect: PixelRect;
+    if (isRow) {
+      const w = rect.width * ratio;
+      childRect = { x: rect.x + offset, y: rect.y, width: w, height: rect.height };
+      offset += w;
+    } else {
+      const h = rect.height * ratio;
+      childRect = { x: rect.x, y: rect.y + offset, width: rect.width, height: h };
+      offset += h;
+    }
+    const childMap = computeScreenRects(child, childRect);
+    childMap.forEach((r, id) => result.set(id, r));
+  }
+  return result;
+}
+
+function computeMaxScreenDistance(rectsA: Map<string | number, PixelRect>, rectsB: Map<string | number, PixelRect>): number {
+  let maxDist = 0;
+  rectsA.forEach((rectA, id) => {
+    const rectB = rectsB.get(id);
+    if (!rectB) return;
+    const cxA = rectA.x + rectA.width / 2;
+    const cyA = rectA.y + rectA.height / 2;
+    const cxB = rectB.x + rectB.width / 2;
+    const cyB = rectB.y + rectB.height / 2;
+    const dist = Math.sqrt((cxB - cxA) ** 2 + (cyB - cyA) ** 2);
+    if (dist > maxDist) maxDist = dist;
+  });
+  return maxDist;
+}
+
+function getScaledAnimationDuration(distance: number): number {
+  const raw = distance / VELOCITY_PX_PER_MS;
+  return Math.max(MIN_ANIMATION_DURATION_MS, Math.min(MAX_ANIMATION_DURATION_MS, Math.round(raw)));
+}
 
 type ContainerChromeProps = {
   path: string;

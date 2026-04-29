@@ -1,21 +1,12 @@
-# Current Session: Resizable Windowing System Animation
+# Resizable Windowing System Architecture
 
-This document tracks the architecture and animation attempts for the resizable windowing system.
+## Overview
 
-## Architecture Overview
+The resizable windowing system is a React Native (web-first) layout engine that renders a tree of split containers and screens. Users can hover or press buttons to insert new screens, and the layout animates the structural change with smooth, velocity-scaled transitions.
 
-### Two-Layer System
+## Layout Tree
 
-The layout uses a two-layer rendering approach:
-
-- **Window layer** (`layerMode="window"`): Renders the actual content with animated sizes
-- **Controls layer** (`layerMode="controls"`): Renders interactive buttons on top, always transparent
-
-Both layers render the same tree structure, but the controls layer is absolutely positioned and pointer-events-managed so buttons stay fixed while the window layer animates.
-
-### Layout Tree Structure
-
-The layout is a tree of `LayoutNode`:
+The layout is defined by a recursive `LayoutNode` tree:
 
 ```ts
 type LayoutNode = SplitNode | ScreenNode;
@@ -24,7 +15,7 @@ type SplitNode = {
   type: 'split';
   direction: 'row' | 'column';
   children: LayoutNode[];
-  size?: string | number;  // flex percentage like "50%"
+  size?: string | number;
 };
 
 type ScreenNode = {
@@ -34,198 +25,117 @@ type ScreenNode = {
 };
 ```
 
-Example config from MainPage:
+Each `SplitNode` divides its space among its children via `flexGrow`, driven by the `size` field (e.g. `'38%'`, `'62%'`). When `size` is omitted, it defaults to an equal share.
 
-```ts
-const exampleConfig: LayoutNode = {
-  type: 'split',
-  direction: 'row',
-  children: [
-    {
-      type: 'split',
-      direction: 'column',
-      size: '74%',
-      children: [
-        {
-          type: 'split',
-          direction: 'row',
-          size: '48%',
-          children: [
-            { type: 'screen', screenId: 1, size: '38%' },
-            { type: 'screen', screenId: 2, size: '62%' },
-          ],
-        },
-        { type: 'screen', screenId: 3, size: '52%' },
-      ],
-    },
-    { type: 'screen', screenId: 4, size: '26%' },
-  ],
-};
-```
+## Two-Layer Rendering
 
-### Layout State Management
+The `Layout` component renders two identical layers:
 
-The `Layout` component manages three config states:
+1. **Window layer** (`layerMode="window"`) — renders the actual screen content and animates size changes.
+2. **Controls layer** (`layerMode="controls"`) — renders invisible interaction buttons aligned with container edges and inter-screen gaps. It is absolutely positioned over the window layer with `pointerEvents="box-none"` so it catches presses without blocking underlying content.
 
-```ts
-const [committedConfig, setCommittedConfig] = React.useState(config);  // The actual committed layout
-const [previewConfig, setPreviewConfig] = React.useState<LayoutNode | null>(null);  // Hover preview
-const [windowConfig, setWindowConfig] = React.useState(config);  // What the window layer renders
-const [animateWindowSizes, setAnimateWindowSizes] = React.useState(false);  // Animation flag
-```
+Both layers share the same tree structure, but the controls layer is static (it does not animate flexGrow). This separation keeps buttons anchored while the window layer resizes beneath them.
 
-The window layer renders either `previewConfig` (during hover) or `windowConfig` (committed state).
+## Insertion Actions
 
-### Recursive Renderer
+Two kinds of user actions modify the tree:
 
-`LayoutRenderer` recursively renders the tree using `react-native-reanimated`:
-
-```ts
-const LayoutRenderer = ({ node, animateSizes }: RendererProps) => {
-  const targetFlexGrow = getFlexGrowValue(node.size);
-  const flexGrow = useSharedValue(targetFlexGrow);
-
-  React.useEffect(() => {
-    cancelAnimation(flexGrow);
-    if (animateSizes) {
-      flexGrow.value = withSpring(targetFlexGrow, SIZE_SPRING);
-      return;
-    }
-    flexGrow.value = targetFlexGrow;
-  }, [animateSizes, flexGrow, targetFlexGrow]);
-
-  const animatedFlexStyle = useAnimatedStyle(() => ({
-    flexGrow: flexGrow.value,
-  }));
-
-  return <Animated.View style={[BASE_FLEX_STYLE, animatedFlexStyle]}>{/* ... */}</Animated.View>;
-};
-```
-
-The animation strategy is: when `animateSizes` becomes true, spring the `flexGrow` from current value to target.
-
-### Layout Actions
-
-Buttons trigger `LayoutAction` events:
+- **Edge action** — pressing a button on the outer border of a screen. The system wraps that screen in a new `SplitNode` with a new sibling `ScreenNode`.
+- **Split action** — pressing a button in the gap between two sibling screens. The system inserts a new `ScreenNode` into the parent's `children` array at that gap index.
 
 ```ts
 type LayoutAction =
-  | { type: 'edge'; key: string; path: string; side: 'top' | 'right' | 'bottom' | 'left' }
-  | { type: 'split'; key: string; path: string; index: number; direction: 'row' | 'column' };
+  | { type: 'edge'; key: string; path: string; side: Side }
+  | { type: 'split'; key: string; path: string; index: number; direction: Direction };
 ```
 
-- **Edge action**: Pressing a border button to add a new screen
-- **Split action**: Pressing a gap button to insert a screen between existing ones
+## Staged Animation: Snap-Then-Grow
 
-### Layout Mutation Logic
-
-The system builds a plan with two configs:
+Every action produces a `LayoutActionPlan` containing two tree snapshots:
 
 ```ts
 type LayoutActionPlan = {
-  introConfig: LayoutNode;  // New structure with 0% sizes
-  finalConfig: LayoutNode;  // New structure with final normalized sizes
+  introConfig: LayoutNode;  // New screen at 0% size; existing screens unchanged
+  finalConfig: LayoutNode;  // All screens renormalized to equal shares
 };
 ```
 
-For split actions (inserting into a gap):
-- `introConfig`: Existing children keep current sizes, new child at 0%
-- `finalConfig`: All children renormalized to share space equally
+The animation is executed in three stages via staged state commits:
 
-For edge actions (wrapping in new split):
-- `introConfig`: Wrapped node at 100%, new sibling at 0%
-- `finalConfig`: Both at 50%
+1. **Snap to intro** — the window layer is switched to `introConfig` with animation disabled. The DOM immediately reflects the new tree with the new screen at zero width/height.
+2. **Enable animation** — a flag (`animateWindowSizes`) is flipped on.
+3. **Commit final** — the window layer is switched to `finalConfig`. Because animation is now enabled, the CSS `transition` (or Reanimated spring on native) drives each screen's `flexGrow` from its intro value to its final value.
 
-Example helpers:
+On web, `react-dom`'s `flushSync` is used between stages to guarantee synchronous React commits so the browser sees discrete paint boundaries.
 
-```ts
-const insertScreenIntoChildrenIntro = (children: LayoutNode[], insertIndex: number, screenId: number): LayoutNode[] => {
-  const currentShares = resolveShares(children);
-  const rebuiltChildren = children.map((child, index) => ({
-    ...child,
-    size: formatPercent(currentShares[index] * 100),  // Keep current sizes
-  }));
+## Web CSS Transitions vs. Reanimated
 
-  rebuiltChildren.splice(normalizedIndex, 0, {
-    type: 'screen',
-    screenId,
-    size: '0%',  // New screen at 0%
-  });
-
-  return rebuiltChildren;
-};
-```
-
-## Animation Attempts
-
-### Attempt 1: Global Layout Transitions
-
-**What we tried:** Used `LinearTransition` from react-native-reanimated on all `Animated.View` components in the tree.
+On **web**, `LayoutRenderer` outputs a plain `View` (not `Animated.View`) and applies CSS transition styles directly to `flexGrow`:
 
 ```ts
-const LAYOUT_TRANSITION = LinearTransition.springify().mass(0.9).stiffness(260).damping(22);
-
-<Animated.View layout={LAYOUT_TRANSITION} style={flexStyle}>
+{
+  transitionProperty: 'flex-grow',
+  transitionDuration: `${computedDurationMs}ms`,
+  transitionTimingFunction: 'cubic-bezier(...)',
+  willChange: 'flex-grow',
+  flexGrow: targetFlexGrow,
+}
 ```
 
-**Problem:** "It jumps all over the place." When adding a new wrapper, the entire tree reflows and everything shifts globally. The animation was too chaotic.
+On **native**, the same component uses `react-native-reanimated`'s `useSharedValue`, `withSpring`, and `useAnimatedStyle` to animate `flexGrow`.
 
-**User feedback:** "no those animations are not it. it jumps all over the place. think about it. If i were u i would have no animations on resize because whenever u add a new wrapper EVERYTHING shifts around. have no css transiton for the actial resizing (if that's what is causing this) and then instead snap right to it."
+## Velocity-Scaled Animation Duration
 
-### Attempt 2: Snap-Then-Grow (Current)
+Instead of a fixed animation duration, the system scales the duration proportionally to the pixel distance the UI must travel.
 
-**What we're trying:**
-1. Remove all global layout transitions
-2. On press, instantly commit the new structure with `introConfig` (new screens at 0%)
-3. Enable animation mode
-4. Switch to `finalConfig` to trigger `flexGrow` spring animation
+- The root `View` measures its pixel dimensions via `onLayout`.
+- `computeScreenRects` recursively maps every `screenId` to a pixel rectangle for a given tree configuration.
+- `computeMaxScreenDistance` compares two configurations and returns the largest center-point distance any single screen moves.
+- `getScaledAnimationDuration` converts that distance into a millisecond value using a constant velocity (`2 px/ms`), clamped between 120 ms and 600 ms.
 
-**Current implementation:**
+Both the expand (hover/press) and contract (hover-out) animations use the distance-appropriate duration.
 
-```ts
-const handleActionPress = React.useCallback((action: LayoutAction) => {
-  const plan = buildLayoutActionPlan(committedConfig, action, nextScreenId);
+## Hover Behavior
 
-  // Phase 1: Set intro config (new screens at 0%)
-  setCommittedConfig(plan.finalConfig);
-  setWindowConfig(plan.introConfig);
-  setPreviewConfig(null);
+- **Hover delay** — a configurable prop (`hoverDelayMs`, default 300 ms, overridden to 400 ms in `MainPage`). When the user hovers a button, the opacity of all other buttons fades to transparent immediately, but the layout shift does not begin until the delay elapses.
+- **Hover-out contract** — when the mouse leaves, the layout animates back to its pre-hover state using an ease-in timing function (slow start, fast end), the mirror of the expand's ease-out.
+- **Press suppression** — if the user presses a button while hovering, the hover-out animation is suppressed because the layout has already been committed.
+- **Button dimming** — all non-hovered buttons become `opacity: 0` during a hover, with a 150 ms CSS opacity transition on web.
 
-  // Phase 2: Multi-frame commit to ensure intro state paints
-  const frameOne = requestAnimationFrame(() => {
-    setAnimateWindowSizes(true);
-    const frameTwo = requestAnimationFrame(() => {
-      setWindowConfig(plan.finalConfig);  // Should trigger spring animation
-    });
-  });
-}, [committedConfig]);
+## Component API
+
+```tsx
+<Layout
+  config={exampleConfig}
+  hoverDelayMs={400}
+  theme={{
+    borderWidth: 30,
+    gapWidth: 30,
+    inactiveButtonThicknessRatio: 0.3,
+    borderRadius: 60,
+    buttonSpanRatio: 0.7,
+    canvasColor: { l: 0.18, c: 0, h: 0 },
+    panelColor: { l: 0.3, c: 0, h: 0 },
+    buttonColor: { l: 0.35, c: 0.03, h: 320 },
+    contrastStep: -0.03,
+    hoverBrightness: 0.05,
+    buttonClassName: 'border-[1px] border-text/20 scale-70',
+  }}
+>
+  <Layout.Screen screenId={1}><DemoContent /></Layout.Screen>
+  <Layout.Screen screenId={2}><DemoContent /></Layout.Screen>
+  <Layout.Screen screenId={3}><DemoContent /></Layout.Screen>
+  <Layout.Screen screenId={4}><DemoContent /></Layout.Screen>
+</Layout>
 ```
 
-**Expected behavior:**
-- Frame 1: Mount intro config (new structure, new screen at 0%)
-- Frame 2: Enable animation flag
-- Frame 3: Switch to final config, spring `flexGrow` from 0 to target
+`Layout.Screen` is a slot component whose children are stored in a `screenMap` and rendered inside the recursive `LayoutRenderer` when it reaches the matching `ScreenNode`.
 
-**Problem:** Still not animating. User reports "it just snaps."
+## Theme System
 
-**Possible issues:**
-1. React batching: The state updates might still be collapsing into a single render
-2. Web-specific: `react-native-reanimated`'s `withSpring` on `flexGrow` might not animate properly on web
-3. Timing: Even with nested `requestAnimationFrame`, the browser might not paint the intermediate state
-4. Reanimated worklet: The `useAnimatedStyle` might not be updating correctly on web
+Colors are authored in OKLCH (`{ l, c, h }`) and converted to CSS at render time. The `panelColor` and `buttonColor` are automatically darkened per depth level using `contrastStep`. A `buttonClassName` string can be passed for Tailwind-style utility classes on every button.
 
-## What We Know
+## Key Files
 
-- The two-layer system works (hover preview, click commit)
-- The layout mutation logic works (correct tree transformations)
-- The intro/final config generation works (correct size values)
-- The multi-frame commit is implemented but not producing visible animation
-- Web is the primary target; iOS is secondary
-
-## Next Steps to Try
-
-1. **Force a paint**: Use `setTimeout` with a small delay instead of `requestAnimationFrame` to guarantee a paint
-2. **Web-specific animation**: Try CSS transitions on `flex-grow` via `className` instead of reanimated
-3. **Direct dimension animation**: Animate `width`/`height` instead of `flexGrow` (more expensive but more reliable)
-4. **React Native Animated**: Try the non-reanimated `Animated` API for web compatibility
-5. **Debug visibility**: Add console logs or visual indicators to verify each phase is actually happening
+- `app/components/Layout.tsx` — core engine (`Layout`, `LayoutRenderer`, tree mutators, animation logic)
+- `app/components/MainPage.tsx` — example usage with `exampleConfig` and theme overrides
