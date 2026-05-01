@@ -41,21 +41,45 @@ const MainPage: React.FC = () => {
                 // buttonIcon={<CheckIcon />}
                 theme={{
                     borderWidth: 30,
-                    inactiveButtonThicknessRatio: 0.33,
-                    // borderWidth: 10,
-                    // inactiveButtonThicknessRatio: 1,
                     gapWidth: 30,
+                    inactiveButtonThicknessRatio: 0.33,
                     borderRadius: 60,
                     buttonSpanRatio: 0.7,
-                    canvasColor: { l: 0.18, c: 0, h: 0 },
-                    panelColor: { l: 0.3, c: 0, h: 0 },
-                      buttonColor: { l: 0.35, c: 0.03, h: 320 },
-                    // buttonColor: { l: 0.3, c: 0, h: 0 },
                     contrastStep: -0.03,
                     hoverBrightness: 0.05,
-                    buttonClassName: 'border-[1px] border-text/20  scale-70',
-                }}
 
+                    canvasColor: { l: 0.18, c: 0, h: 0 },
+                    panelColor: { l: 0.3, c: 0, h: 0 },
+                    buttonColor: { l: 0.35, c: 0.03, h: 320 },
+
+                    buttonClassName: 'border-[1px] border-text/20 scale-70',
+
+                    wireframeVisible: true,
+                    wireframeBorderColor: { l: 1, c: 0, h: 0 },
+                    wireframeBorderOpacity: 0.85,
+                    wireframeBorderWidth: 1,
+                    wireframeBackgroundColor: { l: 0.28, c: 0, h: 0 },
+                    wireframeBackgroundOpacity: 0.8,
+                    wireframeBlurIntensity: 8,
+                    wireframeBlurTint: 'dark',
+                    wireframeRadiusOffset: 0,
+
+                    hoveredButtonVisible: true,
+                    hoveredButtonClassName: 'rounded-full scale-70',
+                    hoveredButtonColor: { l: 1, c: 0, h: 0 },
+                    hoveredButtonBorderColor: { l: 1, c: 0, h: 0 },
+                    hoveredButtonBorderOpacity: 0,
+                    hoveredButtonBorderWidth: 1,
+                    hoveredButtonBackgroundColor: { l: 1, c: 0, h: 0 },
+                    hoveredButtonBackgroundOpacity: 0,
+                    hoveredButtonBlurIntensity: 24,
+                    hoveredButtonBlurTint: 'light',
+                    hoveredButtonHoverBrightness: 0.04,
+                    hoveredButtonRadiusOffset: 0,
+
+                    wireframeFadeInHoldDuration: 100,
+                    wireframeFadeOutHoldDuration: 200,
+                }}
 
             // theme={{
             //   borderWidth: 0,

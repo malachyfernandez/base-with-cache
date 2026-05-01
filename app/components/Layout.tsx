@@ -1,6 +1,7 @@
 import React, { Children, isValidElement, ReactNode } from 'react';
+import { BlurView } from 'expo-blur';
 import { Platform, Pressable, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
-import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 
 type FlushSync = (callback: () => void) => void;
 
@@ -25,6 +26,7 @@ const LayoutContext = React.createContext<{
   buttonIcon?: ReactNode;
   layerMode: LayerMode;
   hoveredActionKey?: string | null;
+  renderOnlyActionKey?: string | null;
   animationPhase?: 'expand' | 'contract' | null;
   animationDurationMs?: number;
   onActionHoverIn?: (action: LayoutAction) => void;
@@ -38,7 +40,8 @@ type Direction = 'row' | 'column';
 type Side = 'top' | 'right' | 'bottom' | 'left';
 type ButtonOrientation = 'horizontal' | 'vertical';
 type ButtonFamily = 'top' | 'bottom' | 'left' | 'right' | 'horizontal-split' | 'vertical-split';
-type LayerMode = 'window' | 'controls';
+type LayerMode = 'window' | 'controls' | 'wireframe' | 'hover-focus';
+type BlurTint = React.ComponentProps<typeof BlurView>['tint'];
 
 type LayoutAction =
   | {
@@ -89,6 +92,32 @@ export type LayoutTheme = {
   hoverBrightness: number;
   buttonClassName?: string;
   buttonStyle?: StyleProp<ViewStyle>;
+  wireframeVisible: boolean;
+  wireframeClassName?: string;
+  wireframeStyle?: StyleProp<ViewStyle>;
+  wireframeBorderColor: OKLCHColor;
+  wireframeBorderOpacity: number;
+  wireframeBorderWidth: number;
+  wireframeBackgroundColor: OKLCHColor;
+  wireframeBackgroundOpacity: number;
+  wireframeBlurIntensity: number;
+  wireframeBlurTint: BlurTint;
+  wireframeRadiusOffset: number;
+  wireframeFadeInHoldDuration: number;
+  wireframeFadeOutHoldDuration: number;
+  hoveredButtonVisible: boolean;
+  hoveredButtonClassName?: string;
+  hoveredButtonStyle?: StyleProp<ViewStyle>;
+  hoveredButtonColor: OKLCHColor;
+  hoveredButtonBorderColor: OKLCHColor;
+  hoveredButtonBorderOpacity: number;
+  hoveredButtonBorderWidth: number;
+  hoveredButtonBackgroundColor: OKLCHColor;
+  hoveredButtonBackgroundOpacity: number;
+  hoveredButtonBlurIntensity: number;
+  hoveredButtonBlurTint: BlurTint;
+  hoveredButtonHoverBrightness: number;
+  hoveredButtonRadiusOffset: number;
 };
 
 /* ───────── Layout system ───────── */
@@ -189,6 +218,30 @@ function oklchToCssColor(color: OKLCHColor) {
   return `rgb(${Math.round(clamp(red, 0, 1) * 255)}, ${Math.round(clamp(green, 0, 1) * 255)}, ${Math.round(clamp(blue, 0, 1) * 255)})`;
 }
 
+function oklchToCssColorWithAlpha(color: OKLCHColor, alpha: number) {
+  if (alpha <= 0) {
+    return 'transparent';
+  }
+
+  const hueRadians = (color.h * Math.PI) / 180;
+  const a = color.c * Math.cos(hueRadians);
+  const b = color.c * Math.sin(hueRadians);
+
+  const lPrime = color.l + 0.3963377774 * a + 0.2158037573 * b;
+  const mPrime = color.l - 0.1055613458 * a - 0.0638541728 * b;
+  const sPrime = color.l - 0.0894841775 * a - 1.291485548 * b;
+
+  const l = lPrime ** 3;
+  const m = mPrime ** 3;
+  const s = sPrime ** 3;
+
+  const red = linearToSrgb(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s);
+  const green = linearToSrgb(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s);
+  const blue = linearToSrgb(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s);
+
+  return `rgba(${Math.round(clamp(red, 0, 1) * 255)}, ${Math.round(clamp(green, 0, 1) * 255)}, ${Math.round(clamp(blue, 0, 1) * 255)}, ${clamp(alpha, 0, 1)})`;
+}
+
 const DEFAULT_THEME: LayoutTheme = {
   borderWidth: 10,
   gapWidth: 10,
@@ -200,6 +253,28 @@ const DEFAULT_THEME: LayoutTheme = {
   contrastStep: 0.08,
   hoverBrightness: 0.1,
   buttonColor: srgbToOklch(222, 171, 238),
+  wireframeVisible: true,
+  wireframeBorderColor: srgbToOklch(255, 255, 255),
+  wireframeBorderOpacity: 0.85,
+  wireframeBorderWidth: 1,
+  wireframeBackgroundColor: srgbToOklch(32, 32, 36),
+  wireframeBackgroundOpacity: 0.14,
+  wireframeBlurIntensity: 8,
+  wireframeBlurTint: 'dark',
+  wireframeRadiusOffset: 0,
+  wireframeFadeInHoldDuration: 0,
+  wireframeFadeOutHoldDuration: 0,
+  hoveredButtonVisible: true,
+  hoveredButtonColor: srgbToOklch(255, 255, 255),
+  hoveredButtonBorderColor: srgbToOklch(255, 255, 255),
+  hoveredButtonBorderOpacity: 1,
+  hoveredButtonBorderWidth: 1,
+  hoveredButtonBackgroundColor: srgbToOklch(255, 255, 255),
+  hoveredButtonBackgroundOpacity: 0,
+  hoveredButtonBlurIntensity: 24,
+  hoveredButtonBlurTint: 'light',
+  hoveredButtonHoverBrightness: 0.04,
+  hoveredButtonRadiusOffset: 0,
 };
 
 const SIZE_SPRING = {
@@ -208,9 +283,7 @@ const SIZE_SPRING = {
   mass: 0.9,
 };
 
-const WEB_ANIMATION_DURATION_MS = 280;
 const WEB_STAGE_DELAY_MS = 24;
-const WEB_TRANSITION_TOTAL_MS = WEB_ANIMATION_DURATION_MS + WEB_STAGE_DELAY_MS * 2;
 
 const debugLayout = (...args: unknown[]) => {
   if (Platform.OS === 'web') {
@@ -257,11 +330,12 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
 
   const resolvedTheme = React.useMemo(() => ({ ...DEFAULT_THEME, ...theme }), [theme]);
   const [committedConfig, setCommittedConfig] = React.useState(config);
-  const [previewConfig, setPreviewConfig] = React.useState<LayoutNode | null>(null);
   const [windowConfig, setWindowConfig] = React.useState(config);
   const [animateWindowSizes, setAnimateWindowSizes] = React.useState(false);
   const [controlsConfig, setControlsConfig] = React.useState(config);
   const [animateControlSizes, setAnimateControlSizes] = React.useState(false);
+  const [wireframeConfig, setWireframeConfig] = React.useState<LayoutNode | null>(null);
+  const [animateWireframeSizes, setAnimateWireframeSizes] = React.useState(false);
   const [hoveredActionKey, setHoveredActionKey] = React.useState<string | null>(null);
   const [animationPhase, setAnimationPhase] = React.useState<'expand' | 'contract' | null>(null);
   const [animationDurationMs, setAnimationDurationMs] = React.useState(280);
@@ -269,11 +343,12 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
   const animationFrameRefs = React.useRef<number[]>([]);
   const suppressHoverOutUntilRef = React.useRef(0);
   const hoveredActionKeyRef = React.useRef<string | null>(null);
-  const hoveredPreviewConfigRef = React.useRef<LayoutNode | null>(null);
   const hoveredIntroConfigRef = React.useRef<LayoutNode | null>(null);
   const hoveredDurationRef = React.useRef(280);
   const skipNextHoverOutRef = React.useRef(false);
   const containerSizeRef = React.useRef({ width: 1000, height: 600 });
+  const wireframeOpacity = useSharedValue(0);
+  const wireframeAnimatedStyle = useAnimatedStyle(() => ({ opacity: wireframeOpacity.value }));
 
   const resolveAnimationDuration = React.useCallback((fromConfig: LayoutNode, toConfig: LayoutNode) => {
     const { width, height } = containerSizeRef.current;
@@ -288,15 +363,16 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
     animationFrameRefs.current = [];
 
     setCommittedConfig(config);
-    setPreviewConfig(null);
     setWindowConfig(config);
     setAnimateWindowSizes(false);
     setControlsConfig(config);
     setAnimateControlSizes(false);
+    setWireframeConfig(null);
+    setAnimateWireframeSizes(false);
+    setHoveredActionKey(null);
     nextScreenIdRef.current = getNextScreenId(config);
     suppressHoverOutUntilRef.current = 0;
     hoveredActionKeyRef.current = null;
-    hoveredPreviewConfigRef.current = null;
     hoveredIntroConfigRef.current = null;
   }, [config]);
 
@@ -315,15 +391,20 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
     debugLayout('state', {
       animateWindowSizes,
       animateControlSizes,
-      preview: previewConfig ? summarizeLayout(previewConfig) : null,
+      animateWireframeSizes,
       window: summarizeLayout(windowConfig),
       controls: summarizeLayout(controlsConfig),
+      wireframe: wireframeConfig ? summarizeLayout(wireframeConfig) : null,
       committed: summarizeLayout(committedConfig),
     });
-  }, [animateControlSizes, animateWindowSizes, committedConfig, controlsConfig, previewConfig, windowConfig]);
+  }, [animateControlSizes, animateWireframeSizes, animateWindowSizes, committedConfig, controlsConfig, wireframeConfig, windowConfig]);
 
   const activeVisibilityMap = React.useMemo(() => buildVisibilityMap(windowConfig), [windowConfig]);
   const controlVisibilityMap = React.useMemo(() => buildVisibilityMap(controlsConfig), [controlsConfig]);
+  const wireframeVisibilityMap = React.useMemo(
+    () => (wireframeConfig ? buildVisibilityMap(wireframeConfig) : null),
+    [wireframeConfig],
+  );
 
   const animateControlsToConfig = React.useCallback(
     (nextConfig: LayoutNode, durationMs: number) => {
@@ -333,13 +414,11 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
       });
 
       const stageOne = scheduleOnWeb(() => {
-        debugLayout('controls stage 1 -> enable animation');
         commitWebLayoutStage(() => {
           setAnimateControlSizes(true);
         });
 
         const stageTwo = scheduleOnWeb(() => {
-          debugLayout('controls stage 2 -> commit control config');
           commitWebLayoutStage(() => {
             setControlsConfig(nextConfig);
           });
@@ -351,7 +430,6 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
       }, WEB_STAGE_DELAY_MS);
 
       const cleanup = scheduleOnWeb(() => {
-        debugLayout('controls complete -> disable animation flag');
         commitWebLayoutStage(() => {
           setAnimateControlSizes(false);
         });
@@ -374,8 +452,6 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
       hoveredDurationRef.current = durationMs;
       setAnimationDurationMs(durationMs);
 
-      debugLayout('hover in', action, summarizeLayout(plan.finalConfig), { durationMs });
-
       animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
       animationFrameRefs.current = [];
 
@@ -384,52 +460,45 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
       hoveredActionKeyRef.current = action.key;
 
       const delayedFrame = scheduleOnWeb(() => {
-        hoveredPreviewConfigRef.current = plan.finalConfig;
         hoveredIntroConfigRef.current = plan.introConfig;
         commitWebLayoutStage(() => {
-          setAnimateWindowSizes(false);
-          setWindowConfig(plan.introConfig);
-          setPreviewConfig(plan.finalConfig);
+          setAnimateWireframeSizes(false);
+          setWireframeConfig(plan.introConfig);
+          wireframeOpacity.value = withTiming(1, { duration: 160 });
         });
 
         const frameOne = scheduleOnWeb(() => {
-          debugLayout('hover stage 1 -> enable animation');
           commitWebLayoutStage(() => {
-            setAnimateWindowSizes(true);
+            setAnimateWireframeSizes(true);
           });
           const frameTwo = scheduleOnWeb(() => {
-            debugLayout('hover stage 2 -> commit preview window config');
             commitWebLayoutStage(() => {
-              setWindowConfig(plan.finalConfig);
+              setWireframeConfig(plan.finalConfig);
             });
             animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameTwo);
           }, WEB_STAGE_DELAY_MS);
 
           animationFrameRefs.current.push(frameTwo);
           animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameOne);
-        }, WEB_STAGE_DELAY_MS);
+        }, WEB_STAGE_DELAY_MS + resolvedTheme.wireframeFadeInHoldDuration);
 
         animationFrameRefs.current.push(frameOne);
       }, hoverDelayMs);
 
       animationFrameRefs.current.push(delayedFrame);
     },
-    [committedConfig, hoverDelayMs, resolveAnimationDuration],
+    [committedConfig, hoverDelayMs, resolveAnimationDuration, resolvedTheme.wireframeFadeInHoldDuration],
   );
 
   const handleActionHoverOut = React.useCallback(() => {
     if (Platform.OS === 'web' && Date.now() < suppressHoverOutUntilRef.current) {
-      debugLayout('hover out ignored during animation window');
       return;
     }
 
     if (skipNextHoverOutRef.current) {
-      debugLayout('hover out ignored: layout already committed from press');
       skipNextHoverOutRef.current = false;
       return;
     }
-
-    debugLayout('hover out');
 
     animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
     animationFrameRefs.current = [];
@@ -437,61 +506,44 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
     setHoveredActionKey(null);
     hoveredActionKeyRef.current = null;
 
-    const hoveredIntroConfig = hoveredIntroConfigRef.current;
     hoveredIntroConfigRef.current = null;
 
-    if (!hoveredIntroConfig) {
-      commitWebLayoutStage(() => {
-        setAnimateWindowSizes(false);
-        setPreviewConfig(null);
-        setWindowConfig(committedConfig);
-      });
-      return;
-    }
-
-    const durationMs = hoveredDurationRef.current;
-    setAnimationDurationMs(durationMs);
-
-    commitWebLayoutStage(() => {
-      setAnimateWindowSizes(true);
-      setWindowConfig(hoveredIntroConfig);
-    });
+    // Fade out wireframe from its current final preview position — no layout animation
+    wireframeOpacity.value = withTiming(0, { duration: 120 });
 
     const clearAnimationTask = scheduleOnWeb(() => {
-      debugLayout('hover out complete -> disable animation flag');
       commitWebLayoutStage(() => {
-        setAnimateWindowSizes(false);
-        setPreviewConfig(null);
-        setWindowConfig(committedConfig);
+        setAnimateWireframeSizes(false);
+        setWireframeConfig(null);
       });
       animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== clearAnimationTask);
-    }, durationMs);
+    }, 150 + resolvedTheme.wireframeFadeOutHoldDuration);
 
     animationFrameRefs.current.push(clearAnimationTask);
-  }, [committedConfig, resolveAnimationDuration]);
+  }, [resolvedTheme.wireframeFadeOutHoldDuration]);
 
   const handleActionPress = React.useCallback((action: LayoutAction) => {
     const nextScreenId = nextScreenIdRef.current;
     const plan = buildLayoutActionPlan(committedConfig, action, nextScreenId);
 
     if (hoveredActionKeyRef.current === action.key) {
-      debugLayout('press -> commit existing hover preview without re-animation');
-      const controlsDuration = resolveAnimationDuration(committedConfig, plan.finalConfig);
       suppressHoverOutUntilRef.current = Date.now() + 120;
       skipNextHoverOutRef.current = true;
       setAnimationPhase('expand');
       setHoveredActionKey(null);
       hoveredActionKeyRef.current = null;
-      hoveredPreviewConfigRef.current = null;
       hoveredIntroConfigRef.current = null;
       animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
       animationFrameRefs.current = [];
-      animateControlsToConfig(plan.finalConfig, controlsDuration);
       commitWebLayoutStage(() => {
         setAnimateWindowSizes(false);
+        setAnimateControlSizes(false);
+        setAnimateWireframeSizes(false);
         setCommittedConfig(plan.finalConfig);
         setWindowConfig(plan.finalConfig);
-        setPreviewConfig(null);
+        setControlsConfig(plan.finalConfig);
+        setWireframeConfig(null);
+        wireframeOpacity.value = 0;
       });
       nextScreenIdRef.current = nextScreenId + 1;
       return;
@@ -504,15 +556,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
     setAnimationPhase('expand');
     setHoveredActionKey(null);
     hoveredActionKeyRef.current = null;
-    hoveredPreviewConfigRef.current = null;
     hoveredIntroConfigRef.current = null;
-
-    debugLayout('press', action, {
-      intro: summarizeLayout(plan.introConfig),
-      final: summarizeLayout(plan.finalConfig),
-      windowDuration,
-      controlsDuration,
-    });
 
     animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
     animationFrameRefs.current = [];
@@ -520,19 +564,23 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
 
     commitWebLayoutStage(() => {
       setAnimateWindowSizes(false);
+      setAnimateWireframeSizes(false);
       setCommittedConfig(plan.finalConfig);
       setWindowConfig(plan.introConfig);
-      setPreviewConfig(null);
+      setWireframeConfig(plan.finalConfig);
+      wireframeOpacity.value = 1;
     });
     nextScreenIdRef.current = nextScreenId + 1;
 
+    const fadeOutWireframe = scheduleOnWeb(() => {
+      wireframeOpacity.value = withTiming(0, { duration: 120 });
+    }, windowDuration);
+
     const frameOne = scheduleOnWeb(() => {
-      debugLayout('press stage 1 -> enable animation');
       commitWebLayoutStage(() => {
         setAnimateWindowSizes(true);
       });
       const frameTwo = scheduleOnWeb(() => {
-        debugLayout('press stage 2 -> commit final window config');
         commitWebLayoutStage(() => {
           setWindowConfig(plan.finalConfig);
         });
@@ -543,7 +591,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
       animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameOne);
     }, WEB_STAGE_DELAY_MS);
     animationFrameRefs.current.push(frameOne);
-  }, [committedConfig, resolveAnimationDuration]);
+  }, [animateControlsToConfig, committedConfig, resolveAnimationDuration]);
 
   return (
     <View
@@ -590,6 +638,58 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
           />
         </LayoutContext.Provider>
       </View>
+      {resolvedTheme.wireframeVisible && wireframeConfig && wireframeVisibilityMap ? (
+        <Animated.View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFillObject, wireframeAnimatedStyle]}
+        >
+          <LayoutContext.Provider
+            value={{
+              buttonIcon,
+              layerMode: 'wireframe',
+              hoveredActionKey,
+              animationPhase,
+              animationDurationMs,
+            }}
+          >
+            <LayoutRenderer
+              node={wireframeConfig}
+              screenMap={screenMap}
+              theme={resolvedTheme}
+              visibilityMap={wireframeVisibilityMap}
+              depth={0}
+              path="root"
+              layerMode="wireframe"
+              animateSizes={animateWireframeSizes}
+            />
+          </LayoutContext.Provider>
+        </Animated.View>
+      ) : null}
+      {resolvedTheme.hoveredButtonVisible && hoveredActionKey ? (
+        <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
+          <LayoutContext.Provider
+            value={{
+              buttonIcon,
+              layerMode: 'hover-focus',
+              hoveredActionKey,
+              renderOnlyActionKey: hoveredActionKey,
+              animationPhase,
+              animationDurationMs,
+            }}
+          >
+            <LayoutRenderer
+              node={committedConfig}
+              screenMap={screenMap}
+              theme={resolvedTheme}
+              visibilityMap={activeVisibilityMap}
+              depth={0}
+              path="root"
+              layerMode="hover-focus"
+              animateSizes={false}
+            />
+          </LayoutContext.Provider>
+        </View>
+      ) : null}
     </View>
   );
 };
@@ -666,6 +766,7 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
 
   if (node.type === 'screen') {
     const content = screenMap.get(node.screenId);
+    const contentRadius = Math.max(theme.borderRadius - theme.borderWidth + theme.wireframeRadiusOffset, 0);
 
     return (
       <FlexContainer style={flexStyle}>
@@ -686,6 +787,23 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
               }}
             >
               {content ?? <FallbackScreen screenId={node.screenId} />}
+            </View>
+          ) : layerMode === 'wireframe' ? (
+            <View
+              className={theme.wireframeClassName}
+              style={[
+                {
+                  flex: 1,
+                  borderRadius: contentRadius,
+                  overflow: 'hidden',
+                  backgroundColor: oklchToCssColorWithAlpha(theme.wireframeBackgroundColor, theme.wireframeBackgroundOpacity),
+                  borderWidth: theme.wireframeBorderWidth,
+                  borderColor: oklchToCssColorWithAlpha(theme.wireframeBorderColor, theme.wireframeBorderOpacity),
+                },
+                theme.wireframeStyle,
+              ]}
+            >
+              <BlurFill intensity={theme.wireframeBlurIntensity} tint={theme.wireframeBlurTint} borderRadius={contentRadius} />
             </View>
           ) : (
             <View style={{ flex: 1 }} />
@@ -751,14 +869,59 @@ type WebFlexTransitionStyle = ViewStyle & {
   willChange?: string;
 };
 
-const WEB_FLEX_GROW_TRANSITION_STYLE: WebFlexTransitionStyle = {
-  transitionProperty: 'flex-grow',
-  transitionDuration: '280ms',
-  transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
-  willChange: 'flex-grow',
+const FlexContainer: React.ComponentType<any> = Platform.OS === 'web' ? View : Animated.View;
+
+const BlurFill = ({ intensity, tint, borderRadius }: { intensity: number; tint: BlurTint; borderRadius: number }) => {
+  if (intensity <= 0) {
+    return null;
+  }
+
+  return (
+    <BlurView
+      intensity={intensity}
+      tint={tint}
+      pointerEvents="none"
+      style={[StyleSheet.absoluteFillObject, { borderRadius }]}
+    />
+  );
 };
 
-const FlexContainer: React.ComponentType<any> = Platform.OS === 'web' ? View : Animated.View;
+const getButtonRadiusOffset = (theme: LayoutTheme, layerMode: LayerMode) => {
+  if (layerMode === 'hover-focus') {
+    return theme.hoveredButtonRadiusOffset;
+  }
+
+  return 0;
+};
+
+const getButtonVisualConfig = (theme: LayoutTheme, layerMode: LayerMode, color: OKLCHColor, hovered: boolean) => {
+  if (layerMode === 'hover-focus') {
+    const displayColor = hovered
+      ? { ...theme.hoveredButtonColor, l: Math.min(1, theme.hoveredButtonColor.l + theme.hoveredButtonHoverBrightness) }
+      : theme.hoveredButtonColor;
+    return {
+      backgroundColor: oklchToCssColorWithAlpha(theme.hoveredButtonBackgroundColor, theme.hoveredButtonBackgroundOpacity),
+      borderColor: oklchToCssColorWithAlpha(theme.hoveredButtonBorderColor, theme.hoveredButtonBorderOpacity),
+      borderWidth: theme.hoveredButtonBorderWidth,
+      blurIntensity: theme.hoveredButtonBlurIntensity,
+      blurTint: theme.hoveredButtonBlurTint,
+      className: theme.hoveredButtonClassName,
+      style: theme.hoveredButtonStyle,
+      fillColor: oklchToCssColor(displayColor),
+    };
+  }
+
+  return {
+    backgroundColor: oklchToCssColor(color),
+    borderColor: 'transparent',
+    borderWidth: 0,
+    blurIntensity: 0,
+    blurTint: 'default' as BlurTint,
+    className: theme.buttonClassName,
+    style: theme.buttonStyle,
+    fillColor: oklchToCssColor(color),
+  };
+};
 
 const getFlexGrowValue = (size?: string | number) => {
   if (size === undefined) {
@@ -835,6 +998,7 @@ type ContainerChromeProps = {
 const ContainerChrome = ({ path, theme, visibilityMap, panelColor, buttonColor, layerMode, children }: ContainerChromeProps) => {
   const full = theme.borderWidth;
   const half = full * theme.inactiveButtonThicknessRatio;
+  const showButtons = layerMode === 'controls' || layerMode === 'hover-focus';
 
   const topPad = (visibilityMap.get(`${path}:edge:top`) ?? true) ? full : half;
   const rightPad = (visibilityMap.get(`${path}:edge:right`) ?? true) ? full : half;
@@ -849,7 +1013,7 @@ const ContainerChrome = ({ path, theme, visibilityMap, panelColor, buttonColor, 
         borderRadius: theme.borderRadius,
         overflow: 'hidden',
       }}
-      pointerEvents={layerMode === 'controls' ? 'box-none' : 'auto'}
+      pointerEvents={layerMode === 'controls' ? 'box-none' : layerMode === 'window' ? 'auto' : 'none'}
     >
       {layerMode === 'window' ? (
         <View style={[StyleSheet.absoluteFillObject, { backgroundColor: oklchToCssColor(panelColor) }]} />
@@ -867,7 +1031,7 @@ const ContainerChrome = ({ path, theme, visibilityMap, panelColor, buttonColor, 
         {children}
       </View>
 
-      {layerMode === 'controls' ? (
+      {showButtons ? (
         <>
           <EdgeButton
             path={path}
@@ -916,8 +1080,15 @@ const EdgeButton = ({
   theme: LayoutTheme;
   color: OKLCHColor;
 }) => {
-  const [hovered, setHovered] = React.useState(false);
-  const { buttonIcon, hoveredActionKey: globalHoveredKey, onActionHoverIn, onActionHoverOut, onActionPress } = React.useContext(LayoutContext);
+  const {
+    buttonIcon,
+    hoveredActionKey: globalHoveredKey,
+    layerMode,
+    onActionHoverIn,
+    onActionHoverOut,
+    onActionPress,
+    renderOnlyActionKey,
+  } = React.useContext(LayoutContext);
 
   if (!active) {
     return null;
@@ -926,47 +1097,58 @@ const EdgeButton = ({
   const thickness = theme.borderWidth;
   const insetPercent = ((1 - theme.buttonSpanRatio) / 2) * 100;
   const spanPercent = theme.buttonSpanRatio * 100;
-  const displayColor = hovered ? { ...color, l: Math.min(1, color.l + theme.hoverBrightness) } : color;
-  const backgroundColor = oklchToCssColor(displayColor);
   const action: LayoutAction = { type: 'edge', key: `${path}:edge:${side}`, path, side };
-  const isDimmed = globalHoveredKey !== null && globalHoveredKey !== action.key;
+  const isInteractive = layerMode === 'controls';
+  const isHoveredVisual = layerMode === 'controls' ? false : globalHoveredKey === action.key;
+
+  if (renderOnlyActionKey && renderOnlyActionKey !== action.key) {
+    return null;
+  }
+
+  const visualConfig = getButtonVisualConfig(theme, layerMode, color, isHoveredVisual);
+  const radius = Math.max(thickness / 2 + getButtonRadiusOffset(theme, layerMode), 0);
 
   const baseStyle = {
     position: 'absolute' as const,
     [side]: 0,
-    borderRadius: thickness / 2,
-    backgroundColor,
-    opacity: isDimmed ? 0 : 1,
-    ...(Platform.OS === 'web'
-      ? {
-          transitionProperty: 'opacity',
-          transitionDuration: '150ms',
-          transitionTimingFunction: 'ease',
-        }
-      : {}),
+    borderRadius: radius,
+    backgroundColor: visualConfig.backgroundColor,
+    borderColor: visualConfig.borderColor,
+    borderWidth: visualConfig.borderWidth,
+    overflow: 'hidden' as const,
   };
-
-  const extraStyle = theme.buttonStyle;
 
   const inner = (
     <Pressable
-      className={theme.buttonClassName}
+      className={visualConfig.className}
+      disabled={!isInteractive}
       onHoverIn={() => {
-        setHovered(true);
+        if (!isInteractive) {
+          return;
+        }
         onActionHoverIn?.(action);
       }}
       onHoverOut={() => {
-        setHovered(false);
+        if (!isInteractive) {
+          return;
+        }
         onActionHoverOut?.();
       }}
       onPressIn={() => {
-        setHovered(true);
+        if (!isInteractive) {
+          return;
+        }
         onActionHoverIn?.(action);
       }}
       onPressOut={() => {
-        setHovered(false);
+        if (!isInteractive) {
+          return;
+        }
       }}
       onPress={() => {
+        if (!isInteractive) {
+          return;
+        }
         onActionPress?.(action);
       }}
       style={[
@@ -974,9 +1156,10 @@ const EdgeButton = ({
         side === 'top' || side === 'bottom'
           ? { left: `${insetPercent}%`, width: `${spanPercent}%`, height: thickness }
           : { top: `${insetPercent}%`, width: thickness, height: `${spanPercent}%` },
-        extraStyle,
+        visualConfig.style,
       ]}
     >
+      <BlurFill intensity={visualConfig.blurIntensity} tint={visualConfig.blurTint} borderRadius={radius} />
       {buttonIcon ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           {buttonIcon}
@@ -1005,14 +1188,20 @@ const SplitGap = ({
   buttonColor: OKLCHColor;
   layerMode: LayerMode;
 }) => {
-  const [hovered, setHovered] = React.useState(false);
   const full = theme.gapWidth;
   const half = full * theme.inactiveButtonThicknessRatio;
-  const { buttonIcon, hoveredActionKey: globalHoveredKey, onActionHoverIn, onActionHoverOut, onActionPress } = React.useContext(LayoutContext);
+  const {
+    buttonIcon,
+    hoveredActionKey: globalHoveredKey,
+    onActionHoverIn,
+    onActionHoverOut,
+    onActionPress,
+    renderOnlyActionKey,
+  } = React.useContext(LayoutContext);
 
   const spacerStyle = direction === 'row' ? { width: active ? full : half } : { height: active ? full : half };
 
-  if (layerMode === 'window') {
+  if (layerMode === 'window' || layerMode === 'wireframe') {
     return <View style={spacerStyle} />;
   }
 
@@ -1020,27 +1209,27 @@ const SplitGap = ({
     return <View style={spacerStyle} />;
   }
 
-  const displayColor = hovered ? { ...buttonColor, l: Math.min(1, buttonColor.l + theme.hoverBrightness) } : buttonColor;
-  const backgroundColor = oklchToCssColor(displayColor);
   const action: LayoutAction = { type: 'split', key: `${path}:split:${index}`, path, index, direction };
-  const isDimmed = globalHoveredKey !== null && globalHoveredKey !== action.key;
+
+  if (renderOnlyActionKey && renderOnlyActionKey !== action.key) {
+    return <View style={spacerStyle} />;
+  }
+
+  const isInteractive = layerMode === 'controls';
+  const isHoveredVisual = layerMode === 'controls' ? false : globalHoveredKey === action.key;
+  const visualConfig = getButtonVisualConfig(theme, layerMode, buttonColor, isHoveredVisual);
+  const radius = Math.max(full / 2 + getButtonRadiusOffset(theme, layerMode), 0);
 
   const baseButtonStyle = {
-    borderRadius: full / 2,
-    backgroundColor,
-    opacity: isDimmed ? 0 : 1,
-    ...(Platform.OS === 'web'
-      ? {
-          transitionProperty: 'opacity',
-          transitionDuration: '150ms',
-          transitionTimingFunction: 'ease',
-        }
-      : {}),
+    borderRadius: radius,
+    backgroundColor: visualConfig.backgroundColor,
+    borderColor: visualConfig.borderColor,
+    borderWidth: visualConfig.borderWidth,
+    overflow: 'hidden' as const,
   };
-  const extraStyle = theme.buttonStyle;
 
   const iconWrapper = buttonIcon ? (
-    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', opacity: isDimmed ? 0 : 1 }}>
+    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
       {buttonIcon}
     </View>
   ) : null;
@@ -1049,31 +1238,44 @@ const SplitGap = ({
     return (
       <View style={{ width: full, alignItems: 'center', justifyContent: 'center' }}>
         <Pressable
-          className={theme.buttonClassName}
+          className={visualConfig.className}
+          disabled={!isInteractive}
           onHoverIn={() => {
-            setHovered(true);
+            if (!isInteractive) {
+              return;
+            }
             onActionHoverIn?.(action);
           }}
           onHoverOut={() => {
-            setHovered(false);
+            if (!isInteractive) {
+              return;
+            }
             onActionHoverOut?.();
           }}
           onPressIn={() => {
-            setHovered(true);
+            if (!isInteractive) {
+              return;
+            }
             onActionHoverIn?.(action);
           }}
           onPressOut={() => {
-            setHovered(false);
+            if (!isInteractive) {
+              return;
+            }
           }}
           onPress={() => {
+            if (!isInteractive) {
+              return;
+            }
             onActionPress?.(action);
           }}
           style={[
             baseButtonStyle,
             { width: full, height: `${theme.buttonSpanRatio * 100}%` },
-            extraStyle,
+            visualConfig.style,
           ]}
         >
+          <BlurFill intensity={visualConfig.blurIntensity} tint={visualConfig.blurTint} borderRadius={radius} />
           {iconWrapper ? (
             <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
               {iconWrapper}
@@ -1087,31 +1289,44 @@ const SplitGap = ({
   return (
     <View style={{ height: full, alignItems: 'center', justifyContent: 'center' }}>
       <Pressable
-        className={theme.buttonClassName}
+        className={visualConfig.className}
+        disabled={!isInteractive}
         onHoverIn={() => {
-          setHovered(true);
+          if (!isInteractive) {
+            return;
+          }
           onActionHoverIn?.(action);
         }}
         onHoverOut={() => {
-          setHovered(false);
+          if (!isInteractive) {
+            return;
+          }
           onActionHoverOut?.();
         }}
         onPressIn={() => {
-          setHovered(true);
+          if (!isInteractive) {
+            return;
+          }
           onActionHoverIn?.(action);
         }}
         onPressOut={() => {
-          setHovered(false);
+          if (!isInteractive) {
+            return;
+          }
         }}
         onPress={() => {
+          if (!isInteractive) {
+            return;
+          }
           onActionPress?.(action);
         }}
         style={[
           baseButtonStyle,
           { width: `${theme.buttonSpanRatio * 100}%`, height: full },
-          extraStyle,
+          visualConfig.style,
         ]}
       >
+        <BlurFill intensity={visualConfig.blurIntensity} tint={visualConfig.blurTint} borderRadius={radius} />
         {iconWrapper ? (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
             {iconWrapper}
