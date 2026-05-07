@@ -35,6 +35,9 @@ export const LayoutContext = React.createContext<{
   onActionHoverOut?: () => void;
   onActionPress?: (action: LayoutAction) => void;
   onCloseScreen?: (screenId: string | number) => void;
+  onGapDragStart?: (path: string, index: number, clientX: number, clientY: number) => void;
+  onGapDragMove?: (path: string, index: number, clientX: number, clientY: number) => void;
+  onGapDragEnd?: (path: string, index: number, clientX: number, clientY: number) => void;
 }>({ layerMode: 'window', animationDurationMs: 280 });
 
 /* ───────── types ───────── */
@@ -132,6 +135,7 @@ type LayoutProps = {
   theme?: Partial<LayoutTheme>;
   buttonIcon?: ReactNode;
   hoverDelayMs?: number;
+  onConfigChange?: (config: LayoutNode) => void;
 };
 
 type ScreenSlotProps = {
@@ -157,6 +161,10 @@ type ButtonCandidate = {
 };
 
 type VisibilityMap = Map<string, boolean>;
+
+function configsEqual(a: LayoutNode, b: LayoutNode): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -322,7 +330,7 @@ const commitWebLayoutStage = (callback: () => void) => {
   callback();
 };
 
-const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: LayoutProps) => {
+const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onConfigChange }: LayoutProps) => {
   const screenMap = new Map<string | number, ReactNode>();
 
   Children.forEach(children, (child) => {
@@ -352,6 +360,18 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
   const hoveredDurationRef = React.useRef(280);
   const skipNextHoverOutRef = React.useRef(false);
   const containerSizeRef = React.useRef({ width: 1000, height: 600 });
+  const committedConfigRef = React.useRef(config);
+  const lastEmittedConfigRef = React.useRef<LayoutNode>(config);
+  committedConfigRef.current = committedConfig;
+  const resizeStateRef = React.useRef<{
+    path: string;
+    index: number;
+    direction: Direction;
+    parentRect: PixelRect;
+    initialShares: number[];
+    startX: number;
+    startY: number;
+  } | null>(null);
   const wireframeOpacity = useSharedValue(0);
   const wireframeAnimatedStyle = useAnimatedStyle(() => ({ opacity: wireframeOpacity.value }));
 
@@ -364,6 +384,14 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
   }, []);
 
   React.useEffect(() => {
+    if (configsEqual(config, committedConfigRef.current)) {
+      return;
+    }
+    if (resizeStateRef.current) {
+      console.log('[EFFECT] skipping external config reset because drag in progress');
+      return;
+    }
+
     animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
     animationFrameRefs.current = [];
 
@@ -379,7 +407,19 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
     suppressHoverOutUntilRef.current = 0;
     hoveredActionKeyRef.current = null;
     hoveredIntroConfigRef.current = null;
+    lastEmittedConfigRef.current = config;
   }, [config]);
+
+  React.useEffect(() => {
+    if (configsEqual(committedConfig, config)) {
+      lastEmittedConfigRef.current = config;
+      return;
+    }
+    if (!configsEqual(committedConfig, lastEmittedConfigRef.current)) {
+      lastEmittedConfigRef.current = committedConfig;
+      onConfigChange?.(committedConfig);
+    }
+  }, [committedConfig, config, onConfigChange]);
 
   React.useEffect(() => {
     return () => {
@@ -448,9 +488,12 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
 
   const handleActionHoverIn = React.useCallback(
     (action: LayoutAction) => {
-      if (hoveredActionKeyRef.current === action.key) {
+      if (resizeStateRef.current) {
+        console.log('[HOVER] suppressed because drag in progress');
         return;
       }
+      console.log('[HOVER] in', action.key);
+      hoveredActionKeyRef.current = action.key;
 
       const plan = buildLayoutActionPlan(committedConfig, action, nextScreenIdRef.current);
       const durationMs = resolveAnimationDuration(committedConfig, plan.finalConfig);
@@ -496,7 +539,11 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
   );
 
   const handleActionHoverOut = React.useCallback(() => {
-    if (Platform.OS === 'web' && Date.now() < suppressHoverOutUntilRef.current) {
+    if (resizeStateRef.current) {
+      console.log('[HOVER] out suppressed because drag in progress');
+      return;
+    }
+    if (Date.now() < suppressHoverOutUntilRef.current) {
       return;
     }
 
@@ -661,6 +708,105 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
     [committedConfig, resolveAnimationDuration],
   );
 
+  const handleGapDragStart = React.useCallback(
+    (path: string, index: number, clientX: number, clientY: number) => {
+      console.log('[DRAG] start', path, index, clientX, clientY);
+      const node = getNodeAtPath(committedConfigRef.current, path);
+      if (!node || node.type !== 'split') return;
+      const { width, height } = containerSizeRef.current;
+      const nodeRects = computeNodeRects(committedConfigRef.current, { x: 0, y: 0, width, height });
+      const parentRect = nodeRects.get(path);
+      if (!parentRect) return;
+      const shares = resolveShares(node.children);
+      resizeStateRef.current = {
+        path,
+        index,
+        direction: node.direction,
+        parentRect,
+        initialShares: [...shares],
+        startX: clientX,
+        startY: clientY,
+      };
+    },
+    [],
+  );
+
+  const handleGapDragMove = React.useCallback(
+    (_path: string, _index: number, clientX: number, clientY: number) => {
+      if (!resizeStateRef.current) return;
+      console.log('[DRAG] move', clientX, clientY);
+      const { path, index, direction, parentRect, initialShares } = resizeStateRef.current;
+      const delta = direction === 'row' ? clientX - resizeStateRef.current.startX : clientY - resizeStateRef.current.startY;
+      const parentSize = direction === 'row' ? parentRect.width : parentRect.height;
+      const deltaPercent = (delta / parentSize) * 100;
+
+      const leftShare = initialShares[index];
+      const rightShare = initialShares[index + 1];
+      const totalShare = leftShare + rightShare;
+      const minPercent = 5;
+
+      let newLeft = leftShare + (deltaPercent / 100) * totalShare;
+      let newRight = rightShare - (deltaPercent / 100) * totalShare;
+
+      if (newLeft < minPercent / 100) {
+        newLeft = minPercent / 100;
+        newRight = totalShare - newLeft;
+      } else if (newRight < minPercent / 100) {
+        newRight = minPercent / 100;
+        newLeft = totalShare - newRight;
+      }
+
+      const newShares = [...initialShares];
+      newShares[index] = newLeft;
+      newShares[index + 1] = newRight;
+
+      const shareSum = newShares.reduce((sum, s) => sum + s, 0) || 1;
+      const normalizedShares = newShares.map((s) => s / shareSum);
+
+      const node = getNodeAtPath(committedConfigRef.current, path);
+      if (!node || node.type !== 'split') return;
+
+      const newChildren = node.children.map((child, i) => ({
+        ...child,
+        size: formatPercent(normalizedShares[i] * 100),
+      }));
+
+      const newConfig = updateNodeAtPath(committedConfigRef.current, path, (n) => ({
+        ...n,
+        children: newChildren,
+      }));
+
+      setCommittedConfig(newConfig);
+      setWindowConfig(newConfig);
+      setControlsConfig(newConfig);
+      setAnimateWindowSizes(false);
+      setAnimateControlSizes(false);
+    },
+    [],
+  );
+
+  const handleGapDragEnd = React.useCallback(
+    (_path: string, _index: number, clientX: number, clientY: number) => {
+      if (!resizeStateRef.current) return;
+      const state = resizeStateRef.current;
+      const totalDrag = Math.sqrt((state.startX - clientX) ** 2 + (state.startY - clientY) ** 2);
+      console.log('[DRAG] end', totalDrag, 'dragged?', totalDrag >= 3);
+      resizeStateRef.current = null;
+
+      if (totalDrag < 3) {
+        const action: LayoutAction = {
+          type: 'split',
+          key: `${state.path}:split:${state.index}`,
+          path: state.path,
+          index: state.index,
+          direction: state.direction,
+        };
+        handleActionPress(action);
+      }
+    },
+    [handleActionPress],
+  );
+
   return (
     <View
       style={{ flex: 1, backgroundColor: oklchToCssColor(resolvedTheme.canvasColor) }}
@@ -693,6 +839,9 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
             onActionHoverOut: handleActionHoverOut,
             onActionPress: handleActionPress,
             onCloseScreen: handleCloseScreen,
+            onGapDragStart: handleGapDragStart,
+            onGapDragMove: handleGapDragMove,
+            onGapDragEnd: handleGapDragEnd,
           }}
         >
           <LayoutRenderer
@@ -1067,6 +1216,35 @@ function computeScreenRects(node: LayoutNode, rect: PixelRect): Map<string | num
   return result;
 }
 
+function computeNodeRects(node: LayoutNode, rect: PixelRect, path: string = 'root'): Map<string, PixelRect> {
+  const result = new Map<string, PixelRect>();
+  result.set(path, rect);
+  if (node.type === 'screen') {
+    return result;
+  }
+  const isRow = node.direction === 'row';
+  const totalFlex = node.children.reduce((sum, child) => sum + getFlexGrowValue(child.size), 0);
+  let offset = 0;
+  for (let i = 0; i < node.children.length; i++) {
+    const child = node.children[i];
+    const flex = getFlexGrowValue(child.size);
+    const ratio = totalFlex > 0 ? flex / totalFlex : 1 / node.children.length;
+    let childRect: PixelRect;
+    if (isRow) {
+      const w = rect.width * ratio;
+      childRect = { x: rect.x + offset, y: rect.y, width: w, height: rect.height };
+      offset += w;
+    } else {
+      const h = rect.height * ratio;
+      childRect = { x: rect.x, y: rect.y + offset, width: rect.width, height: h };
+      offset += h;
+    }
+    const childMap = computeNodeRects(child, childRect, `${path}.${i}`);
+    childMap.forEach((r, p) => result.set(p, r));
+  }
+  return result;
+}
+
 function computeMaxScreenDistance(rectsA: Map<string | number, PixelRect>, rectsB: Map<string | number, PixelRect>): number {
   let maxDist = 0;
   rectsA.forEach((rectA, id) => {
@@ -1192,24 +1370,23 @@ const EdgeButton = ({
     renderOnlyActionKey,
   } = React.useContext(LayoutContext);
 
-  if (!active) {
-    return null;
-  }
-
   const thickness = theme.borderWidth;
   const insetPercent = ((1 - theme.buttonSpanRatio) / 2) * 100;
   const spanPercent = theme.buttonSpanRatio * 100;
   const action: LayoutAction = { type: 'edge', key: `${path}:edge:${side}`, path, side };
   const isInteractive = layerMode === 'controls';
   const isHoveredVisual = layerMode === 'controls' ? false : globalHoveredKey === action.key;
+  const visualConfig = getButtonVisualConfig(theme, layerMode, color, isHoveredVisual);
+  const classNameStyles = useResolveClassNames(visualConfig.className ?? '');
+  const radius = Math.max(thickness / 2 + getButtonRadiusOffset(theme, layerMode), 0);
+
+  if (!active) {
+    return null;
+  }
 
   if (renderOnlyActionKey && renderOnlyActionKey !== action.key) {
     return null;
   }
-
-  const visualConfig = getButtonVisualConfig(theme, layerMode, color, isHoveredVisual);
-  const classNameStyles = useResolveClassNames(visualConfig.className ?? '');
-  const radius = Math.max(thickness / 2 + getButtonRadiusOffset(theme, layerMode), 0);
 
   const baseStyle = {
     position: 'absolute' as const,
@@ -1299,25 +1476,18 @@ const SplitGap = ({
     onActionHoverIn,
     onActionHoverOut,
     onActionPress,
+    onGapDragStart,
+    onGapDragMove,
+    onGapDragEnd,
     renderOnlyActionKey,
   } = React.useContext(LayoutContext);
 
+  const isDraggingRef = React.useRef(false);
+  const handledPressRef = React.useRef(false);
+  const suppressHoverRef = React.useRef(false);
+
   const spacerStyle = direction === 'row' ? { width: active ? full : half } : { height: active ? full : half };
-
-  if (layerMode === 'window' || layerMode === 'wireframe') {
-    return <View style={spacerStyle} />;
-  }
-
-  if (!active) {
-    return <View style={spacerStyle} />;
-  }
-
   const action: LayoutAction = { type: 'split', key: `${path}:split:${index}`, path, index, direction };
-
-  if (renderOnlyActionKey && renderOnlyActionKey !== action.key) {
-    return <View style={spacerStyle} />;
-  }
-
   const isInteractive = layerMode === 'controls';
   const isHoveredVisual = layerMode === 'controls' ? false : globalHoveredKey === action.key;
   const visualConfig = getButtonVisualConfig(theme, layerMode, buttonColor, isHoveredVisual);
@@ -1338,40 +1508,116 @@ const SplitGap = ({
     </View>
   ) : null;
 
+  const attachDragListeners = React.useCallback(
+    (startEvent: any) => {
+      if (Platform.OS !== 'web' || !isInteractive) return;
+      const nativeEvent = startEvent.nativeEvent as PointerEvent;
+      const startX = nativeEvent.clientX;
+      const startY = nativeEvent.clientY;
+      isDraggingRef.current = false;
+      handledPressRef.current = false;
+      suppressHoverRef.current = true;
+
+      const handlePointerMove = (e: PointerEvent) => {
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (!isDraggingRef.current && dist > 3) {
+          isDraggingRef.current = true;
+          onGapDragStart?.(path, index, startX, startY);
+        }
+        if (isDraggingRef.current) {
+          onGapDragMove?.(path, index, e.clientX, e.clientY);
+        }
+      };
+
+      const handlePointerUp = (e: PointerEvent) => {
+        suppressHoverRef.current = false;
+        window.removeEventListener('pointermove', handlePointerMove);
+        window.removeEventListener('pointerup', handlePointerUp);
+        if (isDraggingRef.current) {
+          isDraggingRef.current = false;
+          onGapDragEnd?.(path, index, e.clientX, e.clientY);
+          handledPressRef.current = true;
+        } else {
+          const dx = e.clientX - startX;
+          const dy = e.clientY - startY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 3) {
+            console.log('[DRAG] short click -> onPress will handle');
+            // Let onPress handle it; don't set handledPressRef
+          } else {
+            console.log('[DRAG] medium click -> firing onActionPress');
+            handledPressRef.current = true;
+            onActionPress?.(action);
+          }
+        }
+      };
+
+      window.addEventListener('pointermove', handlePointerMove);
+      window.addEventListener('pointerup', handlePointerUp);
+    },
+    [isInteractive, path, index, onGapDragStart, onGapDragMove, onGapDragEnd, onActionPress, action],
+  );
+
+  const pressableProps = {
+    disabled: !isInteractive,
+    onHoverIn: () => {
+      if (!isInteractive) return;
+      onActionHoverIn?.(action);
+    },
+    onHoverOut: () => {
+      if (!isInteractive) return;
+      onActionHoverOut?.();
+    },
+    onPressIn: () => {
+      if (!isInteractive) return;
+      if (suppressHoverRef.current) {
+        console.log('[HOVER] onPressIn suppressed because pointer-down drag');
+        return;
+      }
+      onActionHoverIn?.(action);
+    },
+    onPressOut: () => {
+      if (!isInteractive) return;
+    },
+    onPress: () => {
+      if (!isInteractive) return;
+      suppressHoverRef.current = false;
+      if (handledPressRef.current) {
+        console.log('[PRESS] skipped because handledPressRef');
+        handledPressRef.current = false;
+        return;
+      }
+      console.log('[PRESS] firing onActionPress', action.key);
+      onActionPress?.(action);
+    },
+    ...(Platform.OS === 'web' && isInteractive
+      ? ({
+          onPointerDown: (e: any) => {
+            attachDragListeners(e);
+          },
+        } as any)
+      : {}),
+  };
+
+  if (layerMode === 'window' || layerMode === 'wireframe') {
+    return <View style={spacerStyle} />;
+  }
+
+  if (!active) {
+    return <View style={spacerStyle} />;
+  }
+
+  if (renderOnlyActionKey && renderOnlyActionKey !== action.key) {
+    return <View style={spacerStyle} />;
+  }
+
   if (direction === 'row') {
     return (
       <View style={{ width: full, alignItems: 'center', justifyContent: 'center' }}>
         <Pressable
-          disabled={!isInteractive}
-          onHoverIn={() => {
-            if (!isInteractive) {
-              return;
-            }
-            onActionHoverIn?.(action);
-          }}
-          onHoverOut={() => {
-            if (!isInteractive) {
-              return;
-            }
-            onActionHoverOut?.();
-          }}
-          onPressIn={() => {
-            if (!isInteractive) {
-              return;
-            }
-            onActionHoverIn?.(action);
-          }}
-          onPressOut={() => {
-            if (!isInteractive) {
-              return;
-            }
-          }}
-          onPress={() => {
-            if (!isInteractive) {
-              return;
-            }
-            onActionPress?.(action);
-          }}
+          {...pressableProps}
           style={[
             baseButtonStyle,
             { width: full, height: `${theme.buttonSpanRatio * 100}%` },
@@ -1393,36 +1639,7 @@ const SplitGap = ({
   return (
     <View style={{ height: full, alignItems: 'center', justifyContent: 'center' }}>
       <Pressable
-        disabled={!isInteractive}
-        onHoverIn={() => {
-          if (!isInteractive) {
-            return;
-          }
-          onActionHoverIn?.(action);
-        }}
-        onHoverOut={() => {
-          if (!isInteractive) {
-            return;
-          }
-          onActionHoverOut?.();
-        }}
-        onPressIn={() => {
-          if (!isInteractive) {
-            return;
-          }
-          onActionHoverIn?.(action);
-        }}
-        onPressOut={() => {
-          if (!isInteractive) {
-            return;
-          }
-        }}
-        onPress={() => {
-          if (!isInteractive) {
-            return;
-          }
-          onActionPress?.(action);
-        }}
+        {...pressableProps}
         style={[
           baseButtonStyle,
           { width: `${theme.buttonSpanRatio * 100}%`, height: full },

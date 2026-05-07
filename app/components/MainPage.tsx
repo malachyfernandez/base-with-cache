@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View } from 'react-native';
 import Layout, { LayoutNode } from './Layout';
 import { DemoContent } from './DemoContent';
@@ -33,10 +33,12 @@ const exampleConfig: LayoutNode = {
 /* ───────── Page ───────── */
 
 const MainPage: React.FC = () => {
+    const [config, setConfig] = useState<LayoutNode>(exampleConfig);
     return (
         <View style={{ width: '100%', height: '100%', padding: 24, backgroundColor: 'rgb(20, 20, 20)' }}>
             <Layout
-                config={exampleConfig}
+                config={config}
+                onConfigChange={setConfig}
                 hoverDelayMs={100}
                 // buttonIcon={<CheckIcon />}
                 theme={{
