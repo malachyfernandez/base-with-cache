@@ -624,9 +624,8 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
         setAnimateWireframeSizes(false);
         setWireframeConfig(null);
         wireframeOpacity.value = 0;
-        setCommittedConfig(removalConfig);
-        setControlsConfig(removalConfig);
-        setWindowConfig(closePlan);
+        // DON'T remove from committedConfig/controlsConfig yet — animate first, delete after
+        setWindowConfig(committedConfig);
       });
 
       const frameOne = scheduleOnWeb(() => {
@@ -636,7 +635,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
 
         const frameTwo = scheduleOnWeb(() => {
           commitWebLayoutStage(() => {
-            setWindowConfig(removalConfig);
+            setWindowConfig(closePlan);
           });
           animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameTwo);
         }, WEB_STAGE_DELAY_MS);
@@ -650,6 +649,9 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
       const cleanup = scheduleOnWeb(() => {
         commitWebLayoutStage(() => {
           setAnimateWindowSizes(false);
+          setCommittedConfig(removalConfig);
+          setControlsConfig(removalConfig);
+          setWindowConfig(removalConfig);
         });
         animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== cleanup);
       }, durationMs + WEB_STAGE_DELAY_MS * 2);
