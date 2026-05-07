@@ -12,6 +12,7 @@ import AuthFailureFallback from "./components/AuthFailureFallback";
 import Column from "./components/layout/Column";
 import MainPage from "./components/MainPage";
 import FontText from "./components/ui/text/FontText";
+import { DemoContent } from "./components/DemoContent";
 
 const useWarmUpBrowser = () => {
   useEffect(() => {
@@ -72,6 +73,7 @@ export default function HomeScreen() {
                 <AuthFailureFallback />
               ) : (
                 <MainPage />
+                // <DemoContent text="Screen" screenId={1} />
               )}
             </SignedIn>
 

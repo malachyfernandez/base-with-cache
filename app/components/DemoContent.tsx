@@ -1,5 +1,6 @@
 import React from 'react';
 import { LayoutChangeEvent, Text, View } from 'react-native';
+import FontTextInput from './ui/forms/FontTextInput';
 
 function hueFromId(id: string | number | undefined) {
   if (id === undefined) return 0;
@@ -12,6 +13,18 @@ export const DemoContent = ({ text, screenId }: { text: string; screenId?: strin
   const hue = hueFromId(screenId);
   const timeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestSizeRef = React.useRef(size);
+  const inputCount = React.useMemo(() => Math.floor(Math.random() * 4) + 1, []);
+  const [inputValues, setInputValues] = React.useState<string[]>(() =>
+    Array(inputCount).fill('')
+  );
+
+  const handleInputChange = React.useCallback((index: number, value: string) => {
+    setInputValues((prev) => {
+      const next = [...prev];
+      next[index] = value;
+      return next;
+    });
+  }, []);
 
   React.useEffect(() => {
     latestSizeRef.current = size;
@@ -73,6 +86,17 @@ export const DemoContent = ({ text, screenId }: { text: string; screenId?: strin
         <Text style={{ color: `hsl(${hue}, 40%, 45%)`, fontSize: 12 }}>
           {Math.round(size.width)} x {Math.round(size.height)}
         </Text>
+        {inputValues.map((value, i) => (
+          <View key={i} style={{ marginTop: 8, width: '100%' }}>
+            <FontTextInput
+              value={value}
+              onChangeText={(text) => handleInputChange(i, text)}
+              placeholder={`Input ${i + 1}`}
+              variant="styled"
+              style={{ color: `hsl(${hue}, 50%, 30%)`, minHeight: 36 }}
+            />
+          </View>
+        ))}
       </View>
     </View>
   );
