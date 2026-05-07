@@ -79,6 +79,8 @@ const MainPage: React.FC = () => {
 
                     wireframeFadeInHoldDuration: 100,
                     wireframeFadeOutHoldDuration: 200,
+
+                    screenScale: 0.7,
                 }}
 
             // theme={{

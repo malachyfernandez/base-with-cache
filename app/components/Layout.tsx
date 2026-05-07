@@ -3,6 +3,7 @@ import { BlurView } from 'expo-blur';
 import { Platform, Pressable, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
 import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 import { useResolveClassNames } from 'uniwind';
+import { X } from 'lucide-react-native';
 
 type FlushSync = (callback: () => void) => void;
 
@@ -23,7 +24,7 @@ if (Platform.OS === 'web') {
   }
 }
 
-const LayoutContext = React.createContext<{
+export const LayoutContext = React.createContext<{
   buttonIcon?: ReactNode;
   layerMode: LayerMode;
   hoveredActionKey?: string | null;
@@ -33,6 +34,7 @@ const LayoutContext = React.createContext<{
   onActionHoverIn?: (action: LayoutAction) => void;
   onActionHoverOut?: () => void;
   onActionPress?: (action: LayoutAction) => void;
+  onCloseScreen?: (screenId: string | number) => void;
 }>({ layerMode: 'window', animationDurationMs: 280 });
 
 /* ───────── types ───────── */
@@ -119,6 +121,7 @@ export type LayoutTheme = {
   hoveredButtonBlurTint: BlurTint;
   hoveredButtonHoverBrightness: number;
   hoveredButtonRadiusOffset: number;
+  screenScale?: number;
 };
 
 /* ───────── Layout system ───────── */
@@ -276,6 +279,7 @@ const DEFAULT_THEME: LayoutTheme = {
   hoveredButtonBlurTint: 'light',
   hoveredButtonHoverBrightness: 0.04,
   hoveredButtonRadiusOffset: 0,
+  screenScale: 1,
 };
 
 const SIZE_SPRING = {
@@ -594,6 +598,67 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
     animationFrameRefs.current.push(frameOne);
   }, [animateControlsToConfig, committedConfig, resolveAnimationDuration]);
 
+  const handleCloseScreen = React.useCallback(
+    (screenId: string | number) => {
+      const path = findNodePathByScreenId(committedConfig, screenId);
+      if (!path || path === 'root') {
+        return;
+      }
+
+      const closePlan = buildClosePlan(committedConfig, path);
+      const removalConfig = removeNodeAtPath(committedConfig, path);
+      const durationMs = resolveAnimationDuration(committedConfig, closePlan);
+      setAnimationDurationMs(durationMs);
+
+      animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
+      animationFrameRefs.current = [];
+
+      setAnimationPhase('contract');
+      setHoveredActionKey(null);
+      hoveredActionKeyRef.current = null;
+      hoveredIntroConfigRef.current = null;
+
+      commitWebLayoutStage(() => {
+        setAnimateWindowSizes(false);
+        setAnimateControlSizes(false);
+        setAnimateWireframeSizes(false);
+        setWireframeConfig(null);
+        wireframeOpacity.value = 0;
+        setCommittedConfig(removalConfig);
+        setControlsConfig(removalConfig);
+        setWindowConfig(closePlan);
+      });
+
+      const frameOne = scheduleOnWeb(() => {
+        commitWebLayoutStage(() => {
+          setAnimateWindowSizes(true);
+        });
+
+        const frameTwo = scheduleOnWeb(() => {
+          commitWebLayoutStage(() => {
+            setWindowConfig(removalConfig);
+          });
+          animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameTwo);
+        }, WEB_STAGE_DELAY_MS);
+
+        animationFrameRefs.current.push(frameTwo);
+        animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameOne);
+      }, WEB_STAGE_DELAY_MS);
+
+      animationFrameRefs.current.push(frameOne);
+
+      const cleanup = scheduleOnWeb(() => {
+        commitWebLayoutStage(() => {
+          setAnimateWindowSizes(false);
+        });
+        animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== cleanup);
+      }, durationMs + WEB_STAGE_DELAY_MS * 2);
+
+      animationFrameRefs.current.push(cleanup);
+    },
+    [committedConfig, resolveAnimationDuration],
+  );
+
   return (
     <View
       style={{ flex: 1, backgroundColor: oklchToCssColor(resolvedTheme.canvasColor) }}
@@ -602,7 +667,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
         containerSizeRef.current = { width, height };
       }}
     >
-      <LayoutContext.Provider value={{ buttonIcon, layerMode: 'window', animationPhase, animationDurationMs }}>
+      <LayoutContext.Provider value={{ buttonIcon, layerMode: 'window', animationPhase, animationDurationMs, onCloseScreen: handleCloseScreen }}>
         <LayoutRenderer
           node={windowConfig}
           screenMap={screenMap}
@@ -625,6 +690,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
             onActionHoverIn: handleActionHoverIn,
             onActionHoverOut: handleActionHoverOut,
             onActionPress: handleActionPress,
+            onCloseScreen: handleCloseScreen,
           }}
         >
           <LayoutRenderer
@@ -651,6 +717,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
               hoveredActionKey,
               animationPhase,
               animationDurationMs,
+              onCloseScreen: handleCloseScreen,
             }}
           >
             <LayoutRenderer
@@ -676,6 +743,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300 }: Lay
               renderOnlyActionKey: hoveredActionKey,
               animationPhase,
               animationDurationMs,
+              onCloseScreen: handleCloseScreen,
             }}
           >
             <LayoutRenderer
@@ -724,7 +792,7 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
   const panelColor = shiftLightness(theme.panelColor, depth * theme.contrastStep);
   const buttonColor = shiftLightness(theme.buttonColor, depth * theme.contrastStep);
   const isWeb = Platform.OS === 'web';
-  const { animationPhase, animationDurationMs } = React.useContext(LayoutContext);
+  const { animationPhase, animationDurationMs, onCloseScreen } = React.useContext(LayoutContext);
   const targetFlexGrow = getFlexGrowValue(node.size);
   const flexGrow = useSharedValue(targetFlexGrow);
 
@@ -787,7 +855,15 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
                 overflow: 'hidden',
               }}
             >
-              {content ?? <FallbackScreen screenId={node.screenId} />}
+              {theme.screenScale !== undefined && theme.screenScale !== 1 ? (
+                <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                  <View style={{ width: '100%', height: '100%', transform: [{ scale: theme.screenScale }] }}>
+                    {content ?? <FallbackScreen screenId={node.screenId} />}
+                  </View>
+                </View>
+              ) : (
+                content ?? <FallbackScreen screenId={node.screenId} />
+              )}
             </View>
           ) : layerMode === 'wireframe' ? (
             <View
@@ -805,6 +881,29 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
               ]}
             >
               <BlurFill intensity={theme.wireframeBlurIntensity} tint={theme.wireframeBlurTint} borderRadius={contentRadius} />
+            </View>
+          ) : layerMode === 'controls' ? (
+            <View style={{ flex: 1 }}>
+              {onCloseScreen && (
+                <Pressable
+                  onPress={() => onCloseScreen(node.screenId)}
+                  style={{
+                    position: 'absolute',
+                    top: 8,
+                    right: 8,
+                    width: 28,
+                    height: 28,
+                    borderRadius: 14,
+                    backgroundColor: 'rgba(0,0,0,0.5)',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    zIndex: 10,
+                  }}
+                  hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+                >
+                  <X size={16} color="#fff" />
+                </Pressable>
+              )}
             </View>
           ) : (
             <View style={{ flex: 1 }} />
@@ -1810,6 +1909,46 @@ const getNodeIndex = (path: string) => {
   const lastSegment = segments[segments.length - 1];
   const parsed = Number.parseInt(lastSegment, 10);
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+const findNodePathByScreenId = (node: LayoutNode, screenId: string | number, currentPath: string = 'root'): string | null => {
+  if (node.type === 'screen') {
+    return node.screenId === screenId ? currentPath : null;
+  }
+  for (let i = 0; i < node.children.length; i++) {
+    const childPath = currentPath === 'root' ? `root.${i}` : `${currentPath}.${i}`;
+    const result = findNodePathByScreenId(node.children[i], screenId, childPath);
+    if (result !== null) return result;
+  }
+  return null;
+};
+
+const removeNodeAtPath = (config: LayoutNode, path: string): LayoutNode => {
+  const parentPath = getParentPath(path);
+  const index = getNodeIndex(path);
+
+  if (!parentPath || index === null) {
+    return config;
+  }
+
+  return updateNodeAtPath(config, parentPath, (node) => {
+    if (node.type !== 'split') return node;
+    const newChildren = [...node.children];
+    newChildren.splice(index, 1);
+
+    if (newChildren.length === 1) {
+      return newChildren[0];
+    }
+
+    return { ...node, children: newChildren };
+  });
+};
+
+const buildClosePlan = (config: LayoutNode, path: string): LayoutNode => {
+  return updateNodeAtPath(config, path, (node) => {
+    if (node.type !== 'screen') return node;
+    return { ...node, size: '0%' };
+  });
 };
 
 const updateNodeBySegments = (node: LayoutNode, segments: number[], updater: (current: LayoutNode) => LayoutNode): LayoutNode => {

@@ -48,3 +48,38 @@ The GameTabBar component was updated to use SVG containers:
 - No icons displayed, text-only design
 - Scalable and themeable through props
 <!-- svg-conversion-end -->
+
+<!-- web-pointer-events-start -->
+## Web Pointer Events Guidelines
+
+This project runs on web (via Expo/React Native Web). **Never use `pointerEvents="box-none"`** on web because it doesn't work as expected and can block touches to underlying elements.
+
+### Rules:
+- **Avoid `pointerEvents="box-none"`** - On web this can still intercept touches even when it shouldn't
+- **Prefer explicit layering** - Place interactive controls in the top-most layer (e.g., controls overlay)
+- **Use `pointerEvents="auto"`** (default) for interactive elements
+- **Use `pointerEvents="none"`** only when you want to completely disable a container
+
+### Example:
+Instead of putting interactive buttons in a window layer with `box-none` overlay, put them in the controls layer that sits on top:
+
+```tsx
+// ❌ Bad - buttons in window layer under overlay
+<View style={{ flex: 1 }}>
+  <Button onPress={...} />  {/* May not receive touches */}
+</View>
+<View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+  <OverlayContent />
+</View>
+
+// ✅ Good - buttons in controls layer (top overlay)
+<View style={{ flex: 1 }}>
+  <Content />
+</View>
+<View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+  <ControlsLayer>
+    <Button onPress={...} />  {/* Guaranteed to receive touches */}
+  </ControlsLayer>
+</View>
+```
+<!-- web-pointer-events-end -->
