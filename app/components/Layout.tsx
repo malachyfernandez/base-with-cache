@@ -328,6 +328,38 @@ const commitWebLayoutStage = (callback: () => void) => {
   callback();
 };
 
+const OSCILLATION_WINDOW_MS = 500;
+const OSCILLATION_THRESHOLD = 3;
+
+function checkOscillation(recent: { configStr: string; time: number }[], configStr: string): { oscillating: boolean; updated: { configStr: string; time: number }[] } {
+  const now = Date.now();
+  const filtered = recent.filter((e) => now - e.time < OSCILLATION_WINDOW_MS);
+  filtered.push({ configStr, time: now });
+  const counts = new Map<string, number>();
+  for (const e of filtered) {
+    counts.set(e.configStr, (counts.get(e.configStr) ?? 0) + 1);
+  }
+  const maxCount = Math.max(0, ...counts.values());
+  return { oscillating: maxCount >= OSCILLATION_THRESHOLD, updated: filtered };
+}
+
+const layoutLog = (tag: string, ...args: unknown[]) => {
+  console.log(`[Layout:${tag}]`, ...args);
+};
+
+const extractScreenSizes = (node: LayoutNode): Record<string, string> => {
+  const result: Record<string, string> = {};
+  const walk = (n: LayoutNode) => {
+    if (n.type === 'screen') {
+      result[String(n.screenId)] = String(n.size ?? 'auto');
+    } else {
+      n.children.forEach(walk);
+    }
+  };
+  walk(node);
+  return result;
+};
+
 const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onConfigChange }: LayoutProps) => {
   const screenMap = new Map<string | number, ReactNode>();
 
@@ -360,6 +392,8 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
   const containerSizeRef = React.useRef({ width: 1000, height: 600 });
   const committedConfigRef = React.useRef(config);
   const lastEmittedConfigRef = React.useRef<LayoutNode>(config);
+  const liveDragConfigRef = React.useRef<LayoutNode | null>(null);
+  const recentEmissionsRef = React.useRef<{ configStr: string; time: number }[]>([]);
   committedConfigRef.current = committedConfig;
   const resizeStateRef = React.useRef<{
     path: string;
@@ -382,16 +416,20 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
   }, []);
 
   React.useEffect(() => {
-    if (configsEqual(config, committedConfigRef.current)) {
+    const equal = configsEqual(config, committedConfigRef.current);
+    layoutLog('effect', 'configPropChanged', { equal, hasResize: !!resizeStateRef.current });
+    if (equal) {
       return;
     }
     if (resizeStateRef.current) {
+      layoutLog('effect', 'configPropChanged skipped - resize active');
       return;
     }
 
     animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
     animationFrameRefs.current = [];
 
+    layoutLog('effect', 'resetting internal state to config prop', { screenSizes: extractScreenSizes(config) });
     setCommittedConfig(config);
     setWindowConfig(config);
     setAnimateWindowSizes(false);
@@ -405,18 +443,32 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
     hoveredActionKeyRef.current = null;
     hoveredIntroConfigRef.current = null;
     lastEmittedConfigRef.current = config;
+    liveDragConfigRef.current = null;
   }, [config]);
 
   React.useEffect(() => {
-    if (configsEqual(committedConfig, config)) {
+    const equalToProp = configsEqual(committedConfig, config);
+    const equalToLast = configsEqual(committedConfig, lastEmittedConfigRef.current);
+    layoutLog('effect', 'committedConfigChanged', { equalToProp, equalToLast, hasResize: !!resizeStateRef.current });
+    if (equalToProp) {
       lastEmittedConfigRef.current = config;
       return;
     }
     if (resizeStateRef.current) {
       return;
     }
-    if (!configsEqual(committedConfig, lastEmittedConfigRef.current)) {
+    if (!equalToLast) {
+      const configStr = JSON.stringify(committedConfig);
+      const recent = recentEmissionsRef.current;
+      const check = checkOscillation(recent, configStr);
+      if (check.oscillating) {
+        layoutLog('effect', 'committedConfigChanged OSCILLATION DETECTED - suppressing emit');
+        console.error('[Layout:OSCILLATION] Rapid config oscillation detected in emission effect. Suppressing.');
+        return;
+      }
+      recentEmissionsRef.current = check.updated;
       lastEmittedConfigRef.current = committedConfig;
+      layoutLog('effect', 'emitting committedConfig', { screenSizes: extractScreenSizes(committedConfig) });
       onConfigChange?.(committedConfig);
     }
   }, [committedConfig, config, onConfigChange]);
@@ -707,12 +759,20 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
 
   const handleGapDragStart = React.useCallback(
     (path: string, index: number, clientX: number, clientY: number) => {
-        const node = getNodeAtPath(committedConfigRef.current, path);
-      if (!node || node.type !== 'split') return;
+      layoutLog('drag', 'dragStart', { path, index, clientX, clientY });
+      liveDragConfigRef.current = null;
+      const node = getNodeAtPath(committedConfigRef.current, path);
+      if (!node || node.type !== 'split') {
+        layoutLog('drag', 'dragStart abort - node not split', path);
+        return;
+      }
       const { width, height } = containerSizeRef.current;
       const nodeRects = computeNodeRects(committedConfigRef.current, { x: 0, y: 0, width, height });
       const parentRect = nodeRects.get(path);
-      if (!parentRect) return;
+      if (!parentRect) {
+        layoutLog('drag', 'dragStart abort - no parentRect', path);
+        return;
+      }
       const shares = resolveShares(node.children);
       resizeStateRef.current = {
         path,
@@ -771,6 +831,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
         children: newChildren,
       }));
 
+      liveDragConfigRef.current = newConfig;
       setCommittedConfig(newConfig);
       setWindowConfig(newConfig);
       setControlsConfig(newConfig);
@@ -782,12 +843,17 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
 
   const handleGapDragEnd = React.useCallback(
     (_path: string, _index: number, clientX: number, clientY: number) => {
-      if (!resizeStateRef.current) return;
+      layoutLog('drag', 'dragEnd', { _path, _index, clientX, clientY, resizeActive: !!resizeStateRef.current });
+      if (!resizeStateRef.current) {
+        layoutLog('drag', 'dragEnd abort - no resizeState');
+        return;
+      }
       const state = resizeStateRef.current;
       const totalDrag = Math.sqrt((state.startX - clientX) ** 2 + (state.startY - clientY) ** 2);
       resizeStateRef.current = null;
 
       if (totalDrag < 3) {
+        layoutLog('drag', 'dragEnd interpreted as split click');
         const action: LayoutAction = {
           type: 'split',
           key: `${state.path}:split:${state.index}`,
@@ -797,10 +863,29 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
         };
         handleActionPress(action);
       } else {
-        onConfigChange?.(committedConfig);
+        const finalConfig = liveDragConfigRef.current ?? committedConfigRef.current;
+        const configStr = JSON.stringify(finalConfig);
+        if (configsEqual(finalConfig, lastEmittedConfigRef.current)) {
+          layoutLog('drag', 'dragEnd skip emit - same as last emitted');
+          liveDragConfigRef.current = null;
+          return;
+        }
+        const recent = recentEmissionsRef.current;
+        const check = checkOscillation(recent, configStr);
+        if (check.oscillating) {
+          layoutLog('drag', 'dragEnd OSCILLATION DETECTED - suppressing emit');
+          console.error('[Layout:OSCILLATION] Rapid config oscillation detected. Suppressing further emissions.');
+          liveDragConfigRef.current = null;
+          return;
+        }
+        recentEmissionsRef.current = check.updated;
+        lastEmittedConfigRef.current = finalConfig;
+        layoutLog('drag', 'dragEnd emit config', { screenSizes: extractScreenSizes(finalConfig) });
+        onConfigChange?.(finalConfig);
+        liveDragConfigRef.current = null;
       }
     },
-    [handleActionPress, committedConfig, onConfigChange],
+    [handleActionPress, onConfigChange],
   );
 
   return (
@@ -2147,7 +2232,8 @@ const removeNodeAtPath = (config: LayoutNode, path: string): LayoutNode => {
     newChildren.splice(index, 1);
 
     if (newChildren.length === 1) {
-      return newChildren[0];
+      const child = newChildren[0];
+      return { ...child, size: node.size ?? child.size };
     }
 
     return { ...node, children: newChildren };

@@ -36,8 +36,27 @@ const MainPage: React.FC = () => {
     const [config, setConfig] = useState<LayoutNode>(exampleConfig);
 
     React.useEffect(() => {
-        console.log('[MainPage] config changed:', JSON.stringify(config, null, 2));
+        console.log('[MainPage] config state updated:', JSON.stringify(config, null, 2));
     }, [config]);
+
+    const extractScreenSizes = React.useCallback((node: LayoutNode): Record<string, string> => {
+        const result: Record<string, string> = {};
+        const walk = (n: LayoutNode) => {
+            if (n.type === 'screen') {
+                result[String(n.screenId)] = String(n.size ?? 'auto');
+            } else {
+                n.children.forEach(walk);
+            }
+        };
+        walk(node);
+        return result;
+    }, []);
+
+    const handleConfigChange = React.useCallback((newConfig: LayoutNode) => {
+        const configStr = JSON.stringify(newConfig);
+        console.log('[MainPage] onConfigChange called, config length:', configStr.length, 'screenSizes:', extractScreenSizes(newConfig));
+        setConfig(newConfig);
+    }, [extractScreenSizes]);
 
 // HERE
 
@@ -45,7 +64,7 @@ const MainPage: React.FC = () => {
         <View style={{ width: '100%', height: '100%', padding: 24, backgroundColor: 'rgb(20, 20, 20)' }}>
             <Layout
                 config={config}
-                onConfigChange={setConfig}
+                onConfigChange={handleConfigChange}
                 hoverDelayMs={100}
                 // buttonIcon={<CheckIcon />}
                 theme={{
