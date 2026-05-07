@@ -299,9 +299,7 @@ const SIZE_SPRING = {
 const WEB_STAGE_DELAY_MS = 24;
 
 const debugLayout = (...args: unknown[]) => {
-  if (Platform.OS === 'web') {
-    console.log('[Layout]', ...args);
-  }
+  // Debug logging disabled
 };
 
 const scheduleOnWeb = (callback: () => void, delayMs: number) => {
@@ -388,7 +386,6 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
       return;
     }
     if (resizeStateRef.current) {
-      console.log('[EFFECT] skipping external config reset because drag in progress');
       return;
     }
 
@@ -413,6 +410,9 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
   React.useEffect(() => {
     if (configsEqual(committedConfig, config)) {
       lastEmittedConfigRef.current = config;
+      return;
+    }
+    if (resizeStateRef.current) {
       return;
     }
     if (!configsEqual(committedConfig, lastEmittedConfigRef.current)) {
@@ -489,10 +489,8 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
   const handleActionHoverIn = React.useCallback(
     (action: LayoutAction) => {
       if (resizeStateRef.current) {
-        console.log('[HOVER] suppressed because drag in progress');
         return;
       }
-      console.log('[HOVER] in', action.key);
       hoveredActionKeyRef.current = action.key;
 
       const plan = buildLayoutActionPlan(committedConfig, action, nextScreenIdRef.current);
@@ -540,7 +538,6 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
 
   const handleActionHoverOut = React.useCallback(() => {
     if (resizeStateRef.current) {
-      console.log('[HOVER] out suppressed because drag in progress');
       return;
     }
     if (Date.now() < suppressHoverOutUntilRef.current) {
@@ -710,8 +707,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
 
   const handleGapDragStart = React.useCallback(
     (path: string, index: number, clientX: number, clientY: number) => {
-      console.log('[DRAG] start', path, index, clientX, clientY);
-      const node = getNodeAtPath(committedConfigRef.current, path);
+        const node = getNodeAtPath(committedConfigRef.current, path);
       if (!node || node.type !== 'split') return;
       const { width, height } = containerSizeRef.current;
       const nodeRects = computeNodeRects(committedConfigRef.current, { x: 0, y: 0, width, height });
@@ -734,7 +730,6 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
   const handleGapDragMove = React.useCallback(
     (_path: string, _index: number, clientX: number, clientY: number) => {
       if (!resizeStateRef.current) return;
-      console.log('[DRAG] move', clientX, clientY);
       const { path, index, direction, parentRect, initialShares } = resizeStateRef.current;
       const delta = direction === 'row' ? clientX - resizeStateRef.current.startX : clientY - resizeStateRef.current.startY;
       const parentSize = direction === 'row' ? parentRect.width : parentRect.height;
@@ -790,7 +785,6 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
       if (!resizeStateRef.current) return;
       const state = resizeStateRef.current;
       const totalDrag = Math.sqrt((state.startX - clientX) ** 2 + (state.startY - clientY) ** 2);
-      console.log('[DRAG] end', totalDrag, 'dragged?', totalDrag >= 3);
       resizeStateRef.current = null;
 
       if (totalDrag < 3) {
@@ -802,9 +796,11 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
           direction: state.direction,
         };
         handleActionPress(action);
+      } else {
+        onConfigChange?.(committedConfig);
       }
     },
-    [handleActionPress],
+    [handleActionPress, committedConfig, onConfigChange],
   );
 
   return (
@@ -1544,10 +1540,8 @@ const SplitGap = ({
           const dy = e.clientY - startY;
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist < 3) {
-            console.log('[DRAG] short click -> onPress will handle');
             // Let onPress handle it; don't set handledPressRef
           } else {
-            console.log('[DRAG] medium click -> firing onActionPress');
             handledPressRef.current = true;
             onActionPress?.(action);
           }
@@ -1573,7 +1567,6 @@ const SplitGap = ({
     onPressIn: () => {
       if (!isInteractive) return;
       if (suppressHoverRef.current) {
-        console.log('[HOVER] onPressIn suppressed because pointer-down drag');
         return;
       }
       onActionHoverIn?.(action);
@@ -1585,11 +1578,9 @@ const SplitGap = ({
       if (!isInteractive) return;
       suppressHoverRef.current = false;
       if (handledPressRef.current) {
-        console.log('[PRESS] skipped because handledPressRef');
         handledPressRef.current = false;
         return;
       }
-      console.log('[PRESS] firing onActionPress', action.key);
       onActionPress?.(action);
     },
     ...(Platform.OS === 'web' && isInteractive

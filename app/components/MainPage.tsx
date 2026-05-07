@@ -34,6 +34,13 @@ const exampleConfig: LayoutNode = {
 
 const MainPage: React.FC = () => {
     const [config, setConfig] = useState<LayoutNode>(exampleConfig);
+
+    React.useEffect(() => {
+        console.log('[MainPage] config changed:', JSON.stringify(config, null, 2));
+    }, [config]);
+
+// HERE
+
     return (
         <View style={{ width: '100%', height: '100%', padding: 24, backgroundColor: 'rgb(20, 20, 20)' }}>
             <Layout
