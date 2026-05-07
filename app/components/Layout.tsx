@@ -2,6 +2,7 @@ import React, { Children, isValidElement, ReactNode } from 'react';
 import { BlurView } from 'expo-blur';
 import { Platform, Pressable, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
 import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
+import { useResolveClassNames } from 'uniwind';
 
 type FlushSync = (callback: () => void) => void;
 
@@ -1106,6 +1107,7 @@ const EdgeButton = ({
   }
 
   const visualConfig = getButtonVisualConfig(theme, layerMode, color, isHoveredVisual);
+  const classNameStyles = useResolveClassNames(visualConfig.className ?? '');
   const radius = Math.max(thickness / 2 + getButtonRadiusOffset(theme, layerMode), 0);
 
   const baseStyle = {
@@ -1120,7 +1122,6 @@ const EdgeButton = ({
 
   const inner = (
     <Pressable
-      className={visualConfig.className}
       disabled={!isInteractive}
       onHoverIn={() => {
         if (!isInteractive) {
@@ -1157,6 +1158,7 @@ const EdgeButton = ({
           ? { left: `${insetPercent}%`, width: `${spanPercent}%`, height: thickness }
           : { top: `${insetPercent}%`, width: thickness, height: `${spanPercent}%` },
         visualConfig.style,
+        classNameStyles,
       ]}
     >
       <BlurFill intensity={visualConfig.blurIntensity} tint={visualConfig.blurTint} borderRadius={radius} />
@@ -1218,6 +1220,7 @@ const SplitGap = ({
   const isInteractive = layerMode === 'controls';
   const isHoveredVisual = layerMode === 'controls' ? false : globalHoveredKey === action.key;
   const visualConfig = getButtonVisualConfig(theme, layerMode, buttonColor, isHoveredVisual);
+  const classNameStyles = useResolveClassNames(visualConfig.className ?? '');
   const radius = Math.max(full / 2 + getButtonRadiusOffset(theme, layerMode), 0);
 
   const baseButtonStyle = {
@@ -1238,7 +1241,6 @@ const SplitGap = ({
     return (
       <View style={{ width: full, alignItems: 'center', justifyContent: 'center' }}>
         <Pressable
-          className={visualConfig.className}
           disabled={!isInteractive}
           onHoverIn={() => {
             if (!isInteractive) {
@@ -1273,6 +1275,7 @@ const SplitGap = ({
             baseButtonStyle,
             { width: full, height: `${theme.buttonSpanRatio * 100}%` },
             visualConfig.style,
+            classNameStyles,
           ]}
         >
           <BlurFill intensity={visualConfig.blurIntensity} tint={visualConfig.blurTint} borderRadius={radius} />
@@ -1289,7 +1292,6 @@ const SplitGap = ({
   return (
     <View style={{ height: full, alignItems: 'center', justifyContent: 'center' }}>
       <Pressable
-        className={visualConfig.className}
         disabled={!isInteractive}
         onHoverIn={() => {
           if (!isInteractive) {
@@ -1324,6 +1326,7 @@ const SplitGap = ({
           baseButtonStyle,
           { width: `${theme.buttonSpanRatio * 100}%`, height: full },
           visualConfig.style,
+          classNameStyles,
         ]}
       >
         <BlurFill intensity={visualConfig.blurIntensity} tint={visualConfig.blurTint} borderRadius={radius} />
