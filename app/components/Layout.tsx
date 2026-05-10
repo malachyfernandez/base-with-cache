@@ -34,7 +34,9 @@ export const LayoutContext = React.createContext<{
   onActionHoverIn?: (action: LayoutAction) => void;
   onActionHoverOut?: () => void;
   onActionPress?: (action: LayoutAction) => void;
-  onCloseScreen?: (screenId: string | number) => void;
+  onCloseScreen?: (path: string) => void;
+  onScreenHoverIn?: (instanceId: string, templateId: string | number, path: string) => void;
+  onScreenHoverOut?: () => void;
   onGapDragStart?: (path: string, index: number, clientX: number, clientY: number) => void;
   onGapDragMove?: (path: string, index: number, clientX: number, clientY: number) => void;
   onGapDragEnd?: (path: string, index: number, clientX: number, clientY: number) => void;
@@ -73,7 +75,8 @@ export type SplitNode = {
 
 export type ScreenNode = {
   type: 'screen';
-  screenId: string | number;
+  id: string;
+  screenTemplate: string | number;
   size?: string | number;
 };
 
@@ -135,13 +138,19 @@ type LayoutProps = {
   theme?: Partial<LayoutTheme>;
   buttonIcon?: ReactNode;
   hoverDelayMs?: number;
+  nextScreenTemplate?: string | number;
   onConfigChange?: (config: LayoutNode) => void;
+  onHoverInfoChange?: (info: LayoutHoverInfo | null) => void;
 };
 
 type ScreenSlotProps = {
-  screenId: string | number;
+  screenTemplate: string | number;
   children?: ReactNode;
 };
+
+export type LayoutHoverInfo =
+  | { type: 'button'; buttonId: string; action: LayoutAction }
+  | { type: 'component'; instanceId: string; templateId: string | number; slotId: string };
 
 type Frame = {
   x: number;
@@ -351,7 +360,7 @@ const extractScreenSizes = (node: LayoutNode): Record<string, string> => {
   const result: Record<string, string> = {};
   const walk = (n: LayoutNode) => {
     if (n.type === 'screen') {
-      result[String(n.screenId)] = String(n.size ?? 'auto');
+      result[n.id] = String(n.size ?? 'auto');
     } else {
       n.children.forEach(walk);
     }
@@ -360,14 +369,14 @@ const extractScreenSizes = (node: LayoutNode): Record<string, string> => {
   return result;
 };
 
-const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onConfigChange }: LayoutProps) => {
+const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, nextScreenTemplate, onConfigChange, onHoverInfoChange }: LayoutProps) => {
   const screenMap = new Map<string | number, ReactNode>();
 
   Children.forEach(children, (child) => {
     if (!isValidElement(child)) return;
     if (child.type === LayoutScreen) {
       const props = child.props as ScreenSlotProps;
-      screenMap.set(props.screenId, props.children);
+      screenMap.set(props.screenTemplate, props.children);
     }
   });
 
@@ -382,7 +391,24 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
   const [hoveredActionKey, setHoveredActionKey] = React.useState<string | null>(null);
   const [animationPhase, setAnimationPhase] = React.useState<'expand' | 'contract' | null>(null);
   const [animationDurationMs, setAnimationDurationMs] = React.useState(280);
-  const nextScreenIdRef = React.useRef(getNextScreenId(config));
+  const getMaxInstanceNumber = React.useCallback((node: LayoutNode): number => {
+    let max = 0;
+    walkLayout(node, (n) => {
+      if (n.type === 'screen') {
+        const match = n.id.match(/^inst-(\d+)$/);
+        if (match) {
+          max = Math.max(max, parseInt(match[1], 10));
+        }
+      }
+    });
+    return max;
+  }, []);
+  const nextInstanceIdRef = React.useRef(getMaxInstanceNumber(config) + 1);
+  const generateInstanceId = React.useCallback(() => {
+    const id = `inst-${nextInstanceIdRef.current}`;
+    nextInstanceIdRef.current += 1;
+    return id;
+  }, []);
   const animationFrameRefs = React.useRef<number[]>([]);
   const suppressHoverOutUntilRef = React.useRef(0);
   const hoveredActionKeyRef = React.useRef<string | null>(null);
@@ -406,6 +432,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
   } | null>(null);
   const wireframeOpacity = useSharedValue(0);
   const wireframeAnimatedStyle = useAnimatedStyle(() => ({ opacity: wireframeOpacity.value }));
+  const [containerSize, setContainerSize] = React.useState({ width: 1000, height: 600 });
 
   const resolveAnimationDuration = React.useCallback((fromConfig: LayoutNode, toConfig: LayoutNode) => {
     const { width, height } = containerSizeRef.current;
@@ -438,7 +465,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
     setWireframeConfig(null);
     setAnimateWireframeSizes(false);
     setHoveredActionKey(null);
-    nextScreenIdRef.current = getNextScreenId(config);
+    nextInstanceIdRef.current = getMaxInstanceNumber(config) + 1;
     suppressHoverOutUntilRef.current = 0;
     hoveredActionKeyRef.current = null;
     hoveredIntroConfigRef.current = null;
@@ -502,6 +529,11 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
     () => (wireframeConfig ? buildVisibilityMap(wireframeConfig) : null),
     [wireframeConfig],
   );
+  const [overlayTransitionsEnabled, setOverlayTransitionsEnabled] = React.useState(true);
+  const screenRects = React.useMemo(
+    () => computeInnerScreenRects(committedConfig, { x: 0, y: 0, width: containerSize.width, height: containerSize.height }, resolvedTheme, activeVisibilityMap),
+    [committedConfig, activeVisibilityMap, containerSize.height, containerSize.width, resolvedTheme],
+  );
 
   const animateControlsToConfig = React.useCallback(
     (nextConfig: LayoutNode, durationMs: number) => {
@@ -545,7 +577,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
       }
       hoveredActionKeyRef.current = action.key;
 
-      const plan = buildLayoutActionPlan(committedConfig, action, nextScreenIdRef.current);
+      const plan = buildLayoutActionPlan(committedConfig, action, nextScreenTemplate ?? 'blank', generateInstanceId());
       const durationMs = resolveAnimationDuration(committedConfig, plan.finalConfig);
       hoveredDurationRef.current = durationMs;
       setAnimationDurationMs(durationMs);
@@ -556,6 +588,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
       setAnimationPhase('expand');
       setHoveredActionKey(action.key);
       hoveredActionKeyRef.current = action.key;
+      onHoverInfoChange?.({ type: 'button', buttonId: action.key, action });
 
       const delayedFrame = scheduleOnWeb(() => {
         hoveredIntroConfigRef.current = plan.introConfig;
@@ -585,7 +618,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
 
       animationFrameRefs.current.push(delayedFrame);
     },
-    [committedConfig, hoverDelayMs, resolveAnimationDuration, resolvedTheme.wireframeFadeInHoldDuration],
+    [committedConfig, hoverDelayMs, nextScreenTemplate, onHoverInfoChange, resolveAnimationDuration, resolvedTheme.wireframeFadeInHoldDuration],
   );
 
   const handleActionHoverOut = React.useCallback(() => {
@@ -606,6 +639,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
     setAnimationPhase('contract');
     setHoveredActionKey(null);
     hoveredActionKeyRef.current = null;
+    onHoverInfoChange?.(null);
 
     hoveredIntroConfigRef.current = null;
 
@@ -621,83 +655,50 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
     }, 150 + resolvedTheme.wireframeFadeOutHoldDuration);
 
     animationFrameRefs.current.push(clearAnimationTask);
-  }, [resolvedTheme.wireframeFadeOutHoldDuration]);
+  }, [onHoverInfoChange, resolvedTheme.wireframeFadeOutHoldDuration]);
+
+  const handleScreenHoverIn = React.useCallback(
+    (instanceId: string, templateId: string | number, slotId: string) => {
+      onHoverInfoChange?.({ type: 'component', instanceId, templateId, slotId });
+    },
+    [onHoverInfoChange],
+  );
+
+  const handleScreenHoverOut = React.useCallback(() => {
+    onHoverInfoChange?.(null);
+  }, [onHoverInfoChange]);
 
   const handleActionPress = React.useCallback((action: LayoutAction) => {
-    const nextScreenId = nextScreenIdRef.current;
-    const plan = buildLayoutActionPlan(committedConfig, action, nextScreenId);
+    const screenTemplateToCreate = nextScreenTemplate ?? 'blank';
+    const newInstanceId = generateInstanceId();
+    const plan = buildLayoutActionPlan(committedConfig, action, screenTemplateToCreate, newInstanceId);
 
-    if (hoveredActionKeyRef.current === action.key) {
-      suppressHoverOutUntilRef.current = Date.now() + 120;
-      skipNextHoverOutRef.current = true;
-      setAnimationPhase('expand');
-      setHoveredActionKey(null);
-      hoveredActionKeyRef.current = null;
-      hoveredIntroConfigRef.current = null;
-      animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
-      animationFrameRefs.current = [];
-      commitWebLayoutStage(() => {
-        setAnimateWindowSizes(false);
-        setAnimateControlSizes(false);
-        setAnimateWireframeSizes(false);
-        setCommittedConfig(plan.finalConfig);
-        setWindowConfig(plan.finalConfig);
-        setControlsConfig(plan.finalConfig);
-        setWireframeConfig(null);
-        wireframeOpacity.value = 0;
-      });
-      nextScreenIdRef.current = nextScreenId + 1;
-      return;
-    }
-
-    const windowDuration = resolveAnimationDuration(committedConfig, plan.finalConfig);
-    const controlsDuration = resolveAnimationDuration(committedConfig, plan.finalConfig);
-    setAnimationDurationMs(windowDuration);
-    suppressHoverOutUntilRef.current = Date.now() + windowDuration + 120;
-    setAnimationPhase('expand');
+    suppressHoverOutUntilRef.current = Date.now() + 120;
+    skipNextHoverOutRef.current = true;
     setHoveredActionKey(null);
     hoveredActionKeyRef.current = null;
     hoveredIntroConfigRef.current = null;
-
     animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
     animationFrameRefs.current = [];
-    animateControlsToConfig(plan.finalConfig, controlsDuration);
 
-    commitWebLayoutStage(() => {
-      setAnimateWindowSizes(false);
-      setAnimateWireframeSizes(false);
-      setCommittedConfig(plan.finalConfig);
-      setWindowConfig(plan.introConfig);
-      setWireframeConfig(plan.finalConfig);
-      wireframeOpacity.value = 1;
-    });
-    nextScreenIdRef.current = nextScreenId + 1;
+    setOverlayTransitionsEnabled(false);
+    setAnimateWindowSizes(false);
+    setAnimateControlSizes(false);
+    setAnimateWireframeSizes(false);
+    setCommittedConfig(plan.finalConfig);
+    setWindowConfig(plan.finalConfig);
+    setControlsConfig(plan.finalConfig);
+    setWireframeConfig(null);
+    wireframeOpacity.value = 0;
 
-    const fadeOutWireframe = scheduleOnWeb(() => {
-      wireframeOpacity.value = withTiming(0, { duration: 120 });
-    }, windowDuration);
-
-    const frameOne = scheduleOnWeb(() => {
-      commitWebLayoutStage(() => {
-        setAnimateWindowSizes(true);
-      });
-      const frameTwo = scheduleOnWeb(() => {
-        commitWebLayoutStage(() => {
-          setWindowConfig(plan.finalConfig);
-        });
-        animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameTwo);
-      }, WEB_STAGE_DELAY_MS);
-
-      animationFrameRefs.current.push(frameTwo);
-      animationFrameRefs.current = animationFrameRefs.current.filter((frameId) => frameId !== frameOne);
-    }, WEB_STAGE_DELAY_MS);
-    animationFrameRefs.current.push(frameOne);
-  }, [animateControlsToConfig, committedConfig, resolveAnimationDuration]);
+    scheduleOnWeb(() => {
+      setOverlayTransitionsEnabled(true);
+    }, 0);
+  }, [committedConfig, generateInstanceId, nextScreenTemplate]);
 
   const handleCloseScreen = React.useCallback(
-    (screenId: string | number) => {
-      const path = findNodePathByScreenId(committedConfig, screenId);
-      if (!path || path === 'root') {
+    (path: string) => {
+      if (path === 'root' || !getNodeAtPath(committedConfig, path)) {
         return;
       }
 
@@ -894,9 +895,12 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
       onLayout={(event) => {
         const { width, height } = event.nativeEvent.layout;
         containerSizeRef.current = { width, height };
+        setContainerSize((current) => (
+          current.width === width && current.height === height ? current : { width, height }
+        ));
       }}
     >
-      <LayoutContext.Provider value={{ buttonIcon, layerMode: 'window', animationPhase, animationDurationMs, onCloseScreen: handleCloseScreen }}>
+      <LayoutContext.Provider value={{ buttonIcon, layerMode: 'window', animationPhase, animationDurationMs, onCloseScreen: handleCloseScreen, onScreenHoverIn: handleScreenHoverIn, onScreenHoverOut: handleScreenHoverOut }}>
         <LayoutRenderer
           node={windowConfig}
           screenMap={screenMap}
@@ -906,9 +910,30 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
           path="root"
           layerMode="window"
           animateSizes={animateWindowSizes}
+          renderWindowContent={false}
         />
       </LayoutContext.Provider>
-      <View pointerEvents="box-none" style={StyleSheet.absoluteFillObject}>
+      {collectScreenSlots(committedConfig).map((slot) => {
+        const rect = screenRects.get(slot.path);
+        const renderContent = screenMap.get(slot.screen.screenTemplate);
+        if (!rect) return null;
+        return (
+          <ScreenContentOverlay
+            key={slot.screen.id}
+            instanceId={slot.screen.id}
+            templateId={slot.screen.screenTemplate}
+            slotId={slot.path}
+            rect={rect}
+            theme={resolvedTheme}
+            transitionEnabled={overlayTransitionsEnabled}
+            onHoverIn={handleScreenHoverIn}
+            onHoverOut={handleScreenHoverOut}
+          >
+            {renderContent ?? <FallbackScreen screenTemplate={slot.screen.screenTemplate} />}
+          </ScreenContentOverlay>
+        );
+      })}
+      <View style={StyleSheet.absoluteFillObject}>
         <LayoutContext.Provider
           value={{
             buttonIcon,
@@ -920,6 +945,8 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
             onActionHoverOut: handleActionHoverOut,
             onActionPress: handleActionPress,
             onCloseScreen: handleCloseScreen,
+            onScreenHoverIn: handleScreenHoverIn,
+            onScreenHoverOut: handleScreenHoverOut,
             onGapDragStart: handleGapDragStart,
             onGapDragMove: handleGapDragMove,
             onGapDragEnd: handleGapDragEnd,
@@ -934,6 +961,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
             path="root"
             layerMode="controls"
             animateSizes={animateControlSizes}
+            renderWindowContent
           />
         </LayoutContext.Provider>
       </View>
@@ -961,6 +989,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
               path="root"
               layerMode="wireframe"
               animateSizes={animateWireframeSizes}
+              renderWindowContent
             />
           </LayoutContext.Provider>
         </Animated.View>
@@ -987,6 +1016,7 @@ const Layout = ({ config, children, theme, buttonIcon, hoverDelayMs = 300, onCon
               path="root"
               layerMode="hover-focus"
               animateSizes={false}
+              renderWindowContent
             />
           </LayoutContext.Provider>
         </View>
@@ -1018,13 +1048,14 @@ type RendererProps = {
   path: string;
   layerMode: LayerMode;
   animateSizes: boolean;
+  renderWindowContent: boolean;
 };
 
-const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, layerMode, animateSizes }: RendererProps) => {
+const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, layerMode, animateSizes, renderWindowContent }: RendererProps) => {
   const panelColor = shiftLightness(theme.panelColor, depth * theme.contrastStep);
   const buttonColor = shiftLightness(theme.buttonColor, depth * theme.contrastStep);
   const isWeb = Platform.OS === 'web';
-  const { animationPhase, animationDurationMs, onCloseScreen } = React.useContext(LayoutContext);
+  const { animationPhase, animationDurationMs, onCloseScreen, onScreenHoverIn, onScreenHoverOut } = React.useContext(LayoutContext);
   const targetFlexGrow = getFlexGrowValue(node.size);
   const flexGrow = useSharedValue(targetFlexGrow);
 
@@ -1066,7 +1097,7 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
   );
 
   if (node.type === 'screen') {
-    const content = screenMap.get(node.screenId);
+    const content = screenMap.get(node.screenTemplate);
     const contentRadius = Math.max(theme.borderRadius - theme.borderWidth + theme.wireframeRadiusOffset, 0);
 
     return (
@@ -1087,15 +1118,15 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
                 overflow: 'hidden',
               }}
             >
-              {theme.screenScale !== undefined && theme.screenScale !== 1 ? (
+              {renderWindowContent && theme.screenScale !== undefined && theme.screenScale !== 1 ? (
                 <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
                   <View style={{ width: '100%', height: '100%', transform: [{ scale: theme.screenScale }] }}>
-                    {content ?? <FallbackScreen screenId={node.screenId} />}
+                    {content ?? <FallbackScreen screenTemplate={node.screenTemplate} />}
                   </View>
                 </View>
-              ) : (
-                content ?? <FallbackScreen screenId={node.screenId} />
-              )}
+              ) : renderWindowContent ? (
+                content ?? <FallbackScreen screenTemplate={node.screenTemplate} />
+              ) : null}
             </View>
           ) : layerMode === 'wireframe' ? (
             <View
@@ -1115,10 +1146,14 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
               <BlurFill intensity={theme.wireframeBlurIntensity} tint={theme.wireframeBlurTint} borderRadius={contentRadius} />
             </View>
           ) : layerMode === 'controls' ? (
-            <View style={{ flex: 1 }}>
+            <View
+              style={{ flex: 1 }}
+              onPointerEnter={() => onScreenHoverIn?.(node.id, node.screenTemplate, path)}
+              onPointerLeave={onScreenHoverOut}
+            >
               {onCloseScreen && (
                 <Pressable
-                  onPress={() => onCloseScreen(node.screenId)}
+                  onPress={() => onCloseScreen(path)}
                   style={{
                     position: 'absolute',
                     top: 8,
@@ -1169,6 +1204,7 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
                 path={`${path}.${index}`}
                 layerMode={layerMode}
                 animateSizes={animateSizes}
+                renderWindowContent={renderWindowContent}
               />
               {index < node.children.length - 1 ? (
                 <SplitGap
@@ -1269,10 +1305,10 @@ const MAX_ANIMATION_DURATION_MS = 600;
 
 type PixelRect = { x: number; y: number; width: number; height: number };
 
-function computeScreenRects(node: LayoutNode, rect: PixelRect): Map<string | number, PixelRect> {
-  const result = new Map<string | number, PixelRect>();
+function computeScreenRects(node: LayoutNode, rect: PixelRect): Map<string, PixelRect> {
+  const result = new Map<string, PixelRect>();
   if (node.type === 'screen') {
-    result.set(node.screenId, rect);
+    result.set(node.id, rect);
     return result;
   }
   const isRow = node.direction === 'row';
@@ -1295,6 +1331,134 @@ function computeScreenRects(node: LayoutNode, rect: PixelRect): Map<string | num
     childMap.forEach((r, id) => result.set(id, r));
   }
   return result;
+}
+
+const ScreenContentOverlay = ({
+  instanceId,
+  templateId,
+  slotId,
+  rect,
+  theme,
+  transitionEnabled,
+  onHoverIn,
+  onHoverOut,
+  children,
+}: {
+  instanceId: string;
+  templateId: string | number;
+  slotId: string;
+  rect: PixelRect;
+  theme: LayoutTheme;
+  transitionEnabled: boolean;
+  onHoverIn: (instanceId: string, templateId: string | number, slotId: string) => void;
+  onHoverOut: () => void;
+  children: ReactNode;
+}) => {
+  React.useEffect(() => {
+    console.log(`[Overlay:${instanceId}] x=${rect.x.toFixed(1)} y=${rect.y.toFixed(1)} w=${rect.width.toFixed(1)} h=${rect.height.toFixed(1)}`);
+  }, [instanceId, rect.x, rect.y, rect.width, rect.height]);
+
+  const contentRadius = Math.max(theme.borderRadius - theme.borderWidth, 0);
+  const webTransitionStyle: StyleProp<ViewStyle> = Platform.OS === 'web'
+    ? {
+        transitionProperty: 'transform, width, height',
+        transitionDuration: transitionEnabled ? '280ms' : '0ms',
+        transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
+        willChange: 'transform, width, height',
+      } as ViewStyle
+    : undefined;
+
+  return (
+    <View
+      style={[
+        {
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: rect.width,
+          height: rect.height,
+          transform: [{ translateX: rect.x }, { translateY: rect.y }],
+          borderRadius: contentRadius,
+          overflow: 'hidden',
+        },
+        webTransitionStyle,
+      ]}
+      onPointerEnter={() => onHoverIn(instanceId, templateId, slotId)}
+      onPointerLeave={onHoverOut}
+    >
+      {theme.screenScale !== undefined && theme.screenScale !== 1 ? (
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+          <View style={{ width: '100%', height: '100%', transform: [{ scale: theme.screenScale }] }}>
+            {children}
+          </View>
+        </View>
+      ) : (
+        children
+      )}
+    </View>
+  );
+};
+
+type ScreenSlot = {
+  path: string;
+  screen: ScreenNode;
+};
+
+function collectScreenSlots(node: LayoutNode, path: string = 'root'): ScreenSlot[] {
+  if (node.type === 'screen') {
+    return [{ path, screen: node }];
+  }
+
+  return node.children.flatMap((child, index) => collectScreenSlots(child, `${path}.${index}`));
+}
+
+function computeInnerScreenRects(node: LayoutNode, rect: PixelRect, theme: LayoutTheme, visibilityMap: VisibilityMap, path: string = 'root'): Map<string, PixelRect> {
+  const result = new Map<string, PixelRect>();
+  const contentRect = getContentRect(rect, path, theme, visibilityMap);
+
+  if (node.type === 'screen') {
+    result.set(path, contentRect);
+    return result;
+  }
+
+  const isRow = node.direction === 'row';
+  const gapSizes = node.children.slice(0, -1).map((_, index) => {
+    const active = visibilityMap.get(`${path}:split:${index}`) ?? true;
+    return active ? theme.gapWidth : theme.gapWidth * theme.inactiveButtonThicknessRatio;
+  });
+  const totalGap = gapSizes.reduce((sum, gap) => sum + gap, 0);
+  const available = Math.max((isRow ? contentRect.width : contentRect.height) - totalGap, 0);
+  const totalFlex = node.children.reduce((sum, child) => sum + getFlexGrowValue(child.size), 0);
+  let cursor = isRow ? contentRect.x : contentRect.y;
+
+  node.children.forEach((child, index) => {
+    const flex = getFlexGrowValue(child.size);
+    const ratio = totalFlex > 0 ? flex / totalFlex : 1 / node.children.length;
+    const span = available * ratio;
+    const childRect = isRow
+      ? { x: cursor, y: contentRect.y, width: span, height: contentRect.height }
+      : { x: contentRect.x, y: cursor, width: contentRect.width, height: span };
+    computeInnerScreenRects(child, childRect, theme, visibilityMap, `${path}.${index}`).forEach((value, key) => result.set(key, value));
+    cursor += span + (gapSizes[index] ?? 0);
+  });
+
+  return result;
+}
+
+function getContentRect(rect: PixelRect, path: string, theme: LayoutTheme, visibilityMap: VisibilityMap): PixelRect {
+  const full = theme.borderWidth;
+  const half = full * theme.inactiveButtonThicknessRatio;
+  const top = (visibilityMap.get(`${path}:edge:top`) ?? true) ? full : half;
+  const right = (visibilityMap.get(`${path}:edge:right`) ?? true) ? full : half;
+  const bottom = (visibilityMap.get(`${path}:edge:bottom`) ?? true) ? full : half;
+  const left = (visibilityMap.get(`${path}:edge:left`) ?? true) ? full : half;
+
+  return {
+    x: rect.x + left,
+    y: rect.y + top,
+    width: Math.max(rect.width - left - right, 0),
+    height: Math.max(rect.height - top - bottom, 0),
+  };
 }
 
 function computeNodeRects(node: LayoutNode, rect: PixelRect, path: string = 'root'): Map<string, PixelRect> {
@@ -1326,7 +1490,7 @@ function computeNodeRects(node: LayoutNode, rect: PixelRect, path: string = 'roo
   return result;
 }
 
-function computeMaxScreenDistance(rectsA: Map<string | number, PixelRect>, rectsB: Map<string | number, PixelRect>): number {
+function computeMaxScreenDistance(rectsA: Map<string, PixelRect>, rectsB: Map<string, PixelRect>): number {
   let maxDist = 0;
   rectsA.forEach((rectA, id) => {
     const rectB = rectsB.get(id);
@@ -1374,7 +1538,7 @@ const ContainerChrome = ({ path, theme, visibilityMap, panelColor, buttonColor, 
         borderRadius: theme.borderRadius,
         overflow: 'hidden',
       }}
-      pointerEvents={layerMode === 'controls' ? 'box-none' : layerMode === 'window' ? 'auto' : 'none'}
+      pointerEvents={layerMode === 'controls' ? 'auto' : layerMode === 'window' ? 'auto' : 'none'}
     >
       {layerMode === 'window' ? (
         <View style={[StyleSheet.absoluteFillObject, { backgroundColor: oklchToCssColor(panelColor) }]} />
@@ -1734,8 +1898,8 @@ const SplitGap = ({
   );
 };
 
-const FallbackScreen = ({ screenId }: { screenId: string | number }) => {
-  const hue = hueFromId(screenId);
+const FallbackScreen = ({ screenTemplate }: { screenTemplate: string | number }) => {
+  const hue = hueFromId(screenTemplate);
 
   return (
     <View
@@ -1755,7 +1919,7 @@ const FallbackScreen = ({ screenId }: { screenId: string | number }) => {
           alignItems: 'center',
         }}
       >
-        <Text style={{ color: `hsl(${hue}, 50%, 30%)`, fontWeight: '600' }}>Screen {String(screenId)}</Text>
+        <Text style={{ color: `hsl(${hue}, 50%, 30%)`, fontWeight: '600' }}>Screen {String(screenTemplate)}</Text>
       </View>
     </View>
   );
@@ -1948,7 +2112,7 @@ type LayoutActionPlan = {
   finalConfig: LayoutNode;
 };
 
-const buildLayoutActionPlan = (config: LayoutNode, action: LayoutAction, nextScreenId: number): LayoutActionPlan => {
+const buildLayoutActionPlan = (config: LayoutNode, action: LayoutAction, nextScreenTemplate: string | number, newInstanceId: string): LayoutActionPlan => {
   if (action.type === 'split') {
     const finalConfig = updateNodeAtPath(config, action.path, (node) => {
       if (node.type !== 'split') {
@@ -1957,7 +2121,7 @@ const buildLayoutActionPlan = (config: LayoutNode, action: LayoutAction, nextScr
 
       return {
         ...node,
-        children: insertScreenIntoChildren(node.children, action.index + 1, nextScreenId),
+        children: insertScreenIntoChildren(node.children, action.index + 1, nextScreenTemplate, newInstanceId),
       };
     });
 
@@ -1968,14 +2132,14 @@ const buildLayoutActionPlan = (config: LayoutNode, action: LayoutAction, nextScr
 
       return {
         ...node,
-        children: insertScreenIntoChildrenIntro(node.children, action.index + 1, nextScreenId),
+        children: insertScreenIntoChildrenIntro(node.children, action.index + 1, nextScreenTemplate, newInstanceId),
       };
     });
 
     return { introConfig, finalConfig };
   }
 
-  const parentInsertResult = buildParentInsertPlanForEdgeAction(config, action, nextScreenId);
+  const parentInsertResult = buildParentInsertPlanForEdgeAction(config, action, nextScreenTemplate, newInstanceId);
 
   if (parentInsertResult) {
     return parentInsertResult;
@@ -1989,11 +2153,11 @@ const buildLayoutActionPlan = (config: LayoutNode, action: LayoutAction, nextScr
 
       return {
         ...node,
-        children: insertScreenIntoChildren(node.children, insertIndex, nextScreenId),
+        children: insertScreenIntoChildren(node.children, insertIndex, nextScreenTemplate, newInstanceId),
       };
     }
 
-    return wrapNodeWithScreen(node, action.side, nextScreenId);
+    return wrapNodeWithScreen(node, action.side, nextScreenTemplate, newInstanceId);
   });
 
   const introConfig = updateNodeAtPath(config, action.path, (node) => {
@@ -2004,11 +2168,11 @@ const buildLayoutActionPlan = (config: LayoutNode, action: LayoutAction, nextScr
 
       return {
         ...node,
-        children: insertScreenIntoChildrenIntro(node.children, insertIndex, nextScreenId),
+        children: insertScreenIntoChildrenIntro(node.children, insertIndex, nextScreenTemplate, newInstanceId),
       };
     }
 
-    return wrapNodeWithScreenIntro(node, action.side, nextScreenId);
+    return wrapNodeWithScreenIntro(node, action.side, nextScreenTemplate, newInstanceId);
   });
 
   return { introConfig, finalConfig };
@@ -2017,7 +2181,8 @@ const buildLayoutActionPlan = (config: LayoutNode, action: LayoutAction, nextScr
 const buildParentInsertPlanForEdgeAction = (
   config: LayoutNode,
   action: Extract<LayoutAction, { type: 'edge' }>,
-  nextScreenId: number,
+  nextScreenTemplate: string | number,
+  newInstanceId: string,
 ): LayoutActionPlan | null => {
   const parentPath = getParentPath(action.path);
 
@@ -2042,7 +2207,7 @@ const buildParentInsertPlanForEdgeAction = (
 
     return {
       ...node,
-      children: insertScreenIntoChildren(node.children, insertIndex, nextScreenId),
+      children: insertScreenIntoChildren(node.children, insertIndex, nextScreenTemplate, newInstanceId),
     };
   });
 
@@ -2053,7 +2218,7 @@ const buildParentInsertPlanForEdgeAction = (
 
     return {
       ...node,
-      children: insertScreenIntoChildrenIntro(node.children, insertIndex, nextScreenId),
+      children: insertScreenIntoChildrenIntro(node.children, insertIndex, nextScreenTemplate, newInstanceId),
     };
   });
 
@@ -2068,7 +2233,7 @@ const directionFromSide = (side: Side): Direction => {
   return 'column';
 };
 
-const insertScreenIntoChildren = (children: LayoutNode[], insertIndex: number, screenId: number): LayoutNode[] => {
+const insertScreenIntoChildren = (children: LayoutNode[], insertIndex: number, screenTemplate: string | number, instanceId: string): LayoutNode[] => {
   const normalizedIndex = clamp(insertIndex, 0, children.length);
   const nextShare = 1 / (children.length + 1);
   const scaledShares = resolveShares(children).map((share) => share * (1 - nextShare));
@@ -2079,14 +2244,15 @@ const insertScreenIntoChildren = (children: LayoutNode[], insertIndex: number, s
 
   rebuiltChildren.splice(normalizedIndex, 0, {
     type: 'screen',
-    screenId,
+    id: instanceId,
+    screenTemplate,
     size: formatPercent(nextShare * 100),
   });
 
   return rebuiltChildren;
 };
 
-const insertScreenIntoChildrenIntro = (children: LayoutNode[], insertIndex: number, screenId: number): LayoutNode[] => {
+const insertScreenIntoChildrenIntro = (children: LayoutNode[], insertIndex: number, screenTemplate: string | number, instanceId: string): LayoutNode[] => {
   const normalizedIndex = clamp(insertIndex, 0, children.length);
   const currentShares = resolveShares(children);
   const rebuiltChildren = children.map((child, index) => ({
@@ -2096,21 +2262,23 @@ const insertScreenIntoChildrenIntro = (children: LayoutNode[], insertIndex: numb
 
   rebuiltChildren.splice(normalizedIndex, 0, {
     type: 'screen',
-    screenId,
+    id: instanceId,
+    screenTemplate,
     size: '0%',
   });
 
   return rebuiltChildren;
 };
 
-const wrapNodeWithScreen = (node: LayoutNode, side: Side, screenId: number): SplitNode => {
+const wrapNodeWithScreen = (node: LayoutNode, side: Side, screenTemplate: string | number, instanceId: string): SplitNode => {
   const wrappedNode: LayoutNode = {
     ...node,
     size: '50%',
   };
   const newScreen: ScreenNode = {
     type: 'screen',
-    screenId,
+    id: instanceId,
+    screenTemplate,
     size: '50%',
   };
 
@@ -2122,14 +2290,15 @@ const wrapNodeWithScreen = (node: LayoutNode, side: Side, screenId: number): Spl
   };
 };
 
-const wrapNodeWithScreenIntro = (node: LayoutNode, side: Side, screenId: number): SplitNode => {
+const wrapNodeWithScreenIntro = (node: LayoutNode, side: Side, screenTemplate: string | number, instanceId: string): SplitNode => {
   const wrappedNode: LayoutNode = {
     ...node,
     size: '100%',
   };
   const newScreen: ScreenNode = {
     type: 'screen',
-    screenId,
+    id: instanceId,
+    screenTemplate,
     size: '0%',
   };
 
@@ -2206,18 +2375,6 @@ const getNodeIndex = (path: string) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
-const findNodePathByScreenId = (node: LayoutNode, screenId: string | number, currentPath: string = 'root'): string | null => {
-  if (node.type === 'screen') {
-    return node.screenId === screenId ? currentPath : null;
-  }
-  for (let i = 0; i < node.children.length; i++) {
-    const childPath = currentPath === 'root' ? `root.${i}` : `${currentPath}.${i}`;
-    const result = findNodePathByScreenId(node.children[i], screenId, childPath);
-    if (result !== null) return result;
-  }
-  return null;
-};
-
 const removeNodeAtPath = (config: LayoutNode, path: string): LayoutNode => {
   const parentPath = getParentPath(path);
   const index = getNodeIndex(path);
@@ -2274,28 +2431,10 @@ const formatPercent = (value: number) => `${Number(value.toFixed(3))}%`;
 
 const summarizeLayout = (node: LayoutNode): string => {
   if (node.type === 'screen') {
-    return `screen(${String(node.screenId)}:${String(node.size ?? 'auto')})`;
+    return `screen(${node.id}:${String(node.screenTemplate)}:${String(node.size ?? 'auto')})`;
   }
 
   return `${node.direction}[${node.children.map((child) => summarizeLayout(child)).join(',')}]`;
-};
-
-const getNextScreenId = (node: LayoutNode) => {
-  let maxId = 0;
-
-  walkLayout(node, (current) => {
-    if (current.type !== 'screen') {
-      return;
-    }
-
-    const numericId = typeof current.screenId === 'number' ? current.screenId : Number.parseInt(String(current.screenId), 10);
-
-    if (Number.isFinite(numericId)) {
-      maxId = Math.max(maxId, numericId);
-    }
-  });
-
-  return maxId + 1;
 };
 
 const walkLayout = (node: LayoutNode, visitor: (node: LayoutNode) => void) => {
