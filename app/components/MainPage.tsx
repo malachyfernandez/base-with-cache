@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
-import Layout, { LayoutHoverInfo, LayoutNode } from './Layout';
+import Layout, { LayoutHoverInfo, LayoutNode, CurrentAction } from './Layout';
 import AnalyticsScreen from './demoScreens/AnalyticsScreen';
 import CalendarScreen from './demoScreens/CalendarScreen';
 import ComposerScreen from './demoScreens/ComposerScreen';
@@ -39,6 +39,7 @@ const MainPage: React.FC = () => {
     const [config, setConfig] = useState<LayoutNode>(exampleConfig);
     const [nextScreenTemplate, setNextScreenTemplate] = useState<string | number>(1);
     const [hoverInfo, setHoverInfo] = useState<LayoutHoverInfo | null>(null);
+    const [currentAction, setCurrentAction] = useState<CurrentAction>({ phase: 'idle' });
     const [terminalLines, setTerminalLines] = useState<string[]>(['Layout terminal ready. Try: swap inst-1 inst-4, next 2, next blank, use-hover-next, swap-hover inst-2']);
 
     React.useEffect(() => {
@@ -132,6 +133,7 @@ const MainPage: React.FC = () => {
                     config={config}
                     onConfigChange={handleConfigChange}
                     onHoverInfoChange={setHoverInfo}
+                    onActionStateChange={setCurrentAction}
                     nextScreenTemplate={nextScreenTemplate}
                     hoverDelayMs={100}
                 // buttonIcon={<CheckIcon />}
@@ -214,6 +216,7 @@ const MainPage: React.FC = () => {
             </View>
             <LayoutCommandTerminal
                 hoverInfo={hoverInfo}
+                currentAction={currentAction}
                 nextScreenTemplate={nextScreenTemplate}
                 config={config}
                 lines={terminalLines}
@@ -330,12 +333,14 @@ const collectInstances = (node: LayoutNode, path: string = 'root'): { id: string
 
 const LayoutCommandTerminal = ({
     hoverInfo,
+    currentAction,
     nextScreenTemplate,
     config,
     lines,
     onRunCommand,
 }: {
     hoverInfo: LayoutHoverInfo | null;
+    currentAction: CurrentAction;
     nextScreenTemplate: string | number;
     config: LayoutNode;
     lines: string[];
@@ -353,6 +358,9 @@ const LayoutCommandTerminal = ({
         <View style={{ width: 330, borderRadius: 18, backgroundColor: '#0d0d0d', borderWidth: 1, borderColor: '#333', padding: 14 }}>
             <Text style={{ color: '#fff', fontWeight: '800', fontSize: 16 }}>Layout Terminal</Text>
             <Text style={{ color: '#999', marginTop: 8 }}>Next template: {String(nextScreenTemplate)}</Text>
+            <Text style={{ color: '#999', marginTop: 4 }}>
+                Action: {currentAction.phase === 'idle' ? 'idle' : `${currentAction.phase} ${currentAction.target}(${currentAction.id})`}
+            </Text>
             <Text style={{ color: '#999', marginTop: 4 }}>
                 Hover: {hoverInfo ? hoverInfo.type === 'component' ? `${hoverInfo.instanceId} (t:${String(hoverInfo.templateId)}) @ ${hoverInfo.slotId}` : `button ${hoverInfo.buttonId}` : 'none'}
             </Text>
