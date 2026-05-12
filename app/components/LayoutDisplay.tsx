@@ -39,6 +39,11 @@ export const LayoutContext = React.createContext<{
   onActionEvent?: (event: ActionEvent) => void;
 }>({ layerMode: 'window', animationDurationMs: 280 });
 
+export const OutlineRegistryContext = React.createContext<{
+  register?: (id: string, ref: React.RefObject<any>) => void;
+  unregister?: (id: string) => void;
+}>({});
+
 /* ───────── types ───────── */
 
 type Direction = 'row' | 'column';
@@ -131,7 +136,7 @@ export type LayoutTheme = {
 
 export type LayoutDisplayRef = {
   closeScreen: (path: string) => void;
-  showPreview: (action: LayoutAction) => void;
+  showPreview: (action: LayoutAction) => string | null;
   hidePreview: () => void;
   executeAction: (action: LayoutAction) => void;
 };
@@ -143,6 +148,7 @@ type LayoutProps = {
   buttonIcon?: ReactNode;
   hoverDelayMs?: number;
   nextScreenTemplate?: string | number;
+  outlineTarget?: string | null;
   onConfigChange?: (config: LayoutNode) => void;
   onHoverInfoChange?: (info: LayoutHoverInfo | null) => void;
   onActionEvent?: (event: ActionEvent) => void;
@@ -165,7 +171,7 @@ export type ActionEvent =
   | { type: 'drag-start'; target: 'gap'; id: string; action?: LayoutAction }
   | { type: 'drag-end'; target: 'gap'; id: string; x: number; y: number; action?: LayoutAction };
 
-type Frame = {
+export type Frame = {
   x: number;
   y: number;
   width: number;
@@ -369,6 +375,17 @@ const layoutLog = (tag: string, ...args: unknown[]) => {
   console.log(`[Layout:${tag}]`, ...args);
 };
 
+const getRelativeRect = (element: HTMLElement, container: HTMLElement): Frame => {
+  const elRect = element.getBoundingClientRect();
+  const contRect = container.getBoundingClientRect();
+  return {
+    x: elRect.left - contRect.left,
+    y: elRect.top - contRect.top,
+    width: elRect.width,
+    height: elRect.height,
+  };
+};
+
 const extractScreenSizes = (node: LayoutNode): Record<string, string> => {
   const result: Record<string, string> = {};
   const walk = (n: LayoutNode) => {
@@ -382,7 +399,7 @@ const extractScreenSizes = (node: LayoutNode): Record<string, string> => {
   return result;
 };
 
-const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, children, theme, buttonIcon, hoverDelayMs = 300, nextScreenTemplate, onConfigChange, onHoverInfoChange, onActionEvent }: LayoutProps, ref) => {
+const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, children, theme, buttonIcon, hoverDelayMs = 300, nextScreenTemplate, outlineTarget, onConfigChange, onHoverInfoChange, onActionEvent }: LayoutProps, ref) => {
   const screenMap = new Map<string | number, ReactNode>();
 
   Children.forEach(children, (child) => {
@@ -447,6 +464,44 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
   const wireframeOpacity = useSharedValue(0);
   const wireframeAnimatedStyle = useAnimatedStyle(() => ({ opacity: wireframeOpacity.value }));
   const [containerSize, setContainerSize] = React.useState({ width: 1000, height: 600 });
+
+  /* ─── Highlight box spring tracking ─── */
+  const containerRef = React.useRef<View>(null);
+  const highlightX = useSharedValue(0);
+  const highlightY = useSharedValue(0);
+  const highlightW = useSharedValue(0);
+  const highlightH = useSharedValue(0);
+  const highlightOpacity = useSharedValue(0);
+
+  const elementRefsRef = React.useRef(new Map<string, React.RefObject<any>>());
+
+  const registerElementRef = React.useCallback((id: string, ref: React.RefObject<any>) => {
+    elementRefsRef.current.set(id, ref);
+  }, []);
+
+  const unregisterElementRef = React.useCallback((id: string) => {
+    elementRefsRef.current.delete(id);
+  }, []);
+
+  const outlineRegistryValue = React.useMemo(
+    () => ({ register: registerElementRef, unregister: unregisterElementRef }),
+    [registerElementRef, unregisterElementRef],
+  );
+
+  const springConfig = { damping: 20, stiffness: 250, mass: 0.8 };
+
+  const highlightAnimatedStyle = useAnimatedStyle(() => ({
+    position: 'absolute' as const,
+    left: highlightX.value,
+    top: highlightY.value,
+    width: highlightW.value,
+    height: highlightH.value,
+    opacity: highlightOpacity.value,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.9)',
+    borderRadius: 8,
+    pointerEvents: 'none' as const,
+  }));
 
   const resolveAnimationDuration = React.useCallback((fromConfig: LayoutNode, toConfig: LayoutNode) => {
     const { width, height } = containerSizeRef.current;
@@ -548,6 +603,50 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
     () => computeInnerScreenRects(committedConfig, { x: 0, y: 0, width: containerSize.width, height: containerSize.height }, resolvedTheme, activeVisibilityMap),
     [committedConfig, activeVisibilityMap, containerSize.height, containerSize.width, resolvedTheme],
   );
+  const outlineScreenRects = React.useMemo(() => {
+    const merged = new Map(screenRects);
+    if (wireframeConfig && wireframeVisibilityMap) {
+      const previewRects = computeInnerScreenRects(
+        wireframeConfig,
+        { x: 0, y: 0, width: containerSize.width, height: containerSize.height },
+        resolvedTheme,
+        wireframeVisibilityMap,
+      );
+      previewRects.forEach((rect, id) => {
+        if (!merged.has(id)) {
+          merged.set(id, rect);
+        }
+      });
+    }
+    return merged;
+  }, [screenRects, wireframeConfig, wireframeVisibilityMap, containerSize.width, containerSize.height, resolvedTheme]);
+
+  React.useEffect(() => {
+    if (!outlineTarget) {
+      highlightOpacity.value = withTiming(0, { duration: 80 });
+      return;
+    }
+
+    const screenRect = outlineScreenRects.get(outlineTarget);
+    if (screenRect) {
+      highlightX.value = withSpring(screenRect.x, springConfig);
+      highlightY.value = withSpring(screenRect.y, springConfig);
+      highlightW.value = withSpring(screenRect.width, springConfig);
+      highlightH.value = withSpring(screenRect.height, springConfig);
+      highlightOpacity.value = withTiming(1, { duration: 120 });
+      return;
+    }
+
+    const elRef = elementRefsRef.current.get(outlineTarget);
+    if (elRef?.current && containerRef.current) {
+      const rect = getRelativeRect(elRef.current as unknown as HTMLElement, containerRef.current as unknown as HTMLElement);
+      highlightX.value = withSpring(rect.x, springConfig);
+      highlightY.value = withSpring(rect.y, springConfig);
+      highlightW.value = withSpring(rect.width, springConfig);
+      highlightH.value = withSpring(rect.height, springConfig);
+      highlightOpacity.value = withTiming(1, { duration: 120 });
+    }
+  }, [outlineTarget, outlineScreenRects]);
 
   const animateControlsToConfig = React.useCallback(
     (nextConfig: LayoutNode, durationMs: number) => {
@@ -587,11 +686,12 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
   const handleActionHoverIn = React.useCallback(
     (action: LayoutAction) => {
       if (resizeStateRef.current) {
-        return;
+        return null;
       }
       hoveredActionKeyRef.current = action.key;
 
-      const plan = buildLayoutActionPlan(committedConfig, action, nextScreenTemplate ?? 'blank', generateInstanceId());
+      const previewInstanceId = generateInstanceId();
+      const plan = buildLayoutActionPlan(committedConfig, action, nextScreenTemplate ?? 'blank', previewInstanceId);
       const durationMs = resolveAnimationDuration(committedConfig, plan.finalConfig);
       hoveredDurationRef.current = durationMs;
       setAnimationDurationMs(durationMs);
@@ -631,8 +731,9 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
       }, hoverDelayMs);
 
       animationFrameRefs.current.push(delayedFrame);
+      return previewInstanceId;
     },
-    [committedConfig, hoverDelayMs, nextScreenTemplate, onHoverInfoChange, resolveAnimationDuration, resolvedTheme.wireframeFadeInHoldDuration],
+    [committedConfig, generateInstanceId, hoverDelayMs, nextScreenTemplate, onHoverInfoChange, resolveAnimationDuration, resolvedTheme.wireframeFadeInHoldDuration],
   );
 
   const handleActionHoverOut = React.useCallback(() => {
@@ -678,7 +779,7 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
 
   const handleScreenHoverIn = React.useCallback(
     (instanceId: string, templateId: string | number, slotId: string) => {
-      onActionEvent?.({ type: 'hover-in', target: 'screen', id: slotId });
+      onActionEvent?.({ type: 'hover-in', target: 'screen', id: instanceId });
       onHoverInfoChange?.({ type: 'component', instanceId, templateId, slotId });
     },
     [onHoverInfoChange, onActionEvent],
@@ -925,6 +1026,7 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
 
   return (
     <View
+      ref={containerRef}
       style={{ flex: 1, backgroundColor: oklchToCssColor(resolvedTheme.canvasColor) }}
       onLayout={(event) => {
         const { width, height } = event.nativeEvent.layout;
@@ -934,21 +1036,22 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
         ));
       }}
     >
-      <LayoutContext.Provider value={{ buttonIcon, layerMode: 'window', animationPhase, animationDurationMs, onScreenHoverIn: handleScreenHoverIn, onScreenHoverOut: handleScreenHoverOut, onActionEvent }}>
-        <LayoutRenderer
-          node={windowConfig}
-          screenMap={screenMap}
-          theme={resolvedTheme}
-          visibilityMap={activeVisibilityMap}
-          depth={0}
-          path="root"
-          layerMode="window"
-          animateSizes={animateWindowSizes}
-          renderWindowContent={false}
-        />
-      </LayoutContext.Provider>
+      <OutlineRegistryContext.Provider value={outlineRegistryValue}>
+        <LayoutContext.Provider value={{ buttonIcon, layerMode: 'window', animationPhase, animationDurationMs, onScreenHoverIn: handleScreenHoverIn, onScreenHoverOut: handleScreenHoverOut, onActionEvent }}>
+          <LayoutRenderer
+            node={windowConfig}
+            screenMap={screenMap}
+            theme={resolvedTheme}
+            visibilityMap={activeVisibilityMap}
+            depth={0}
+            path="root"
+            layerMode="window"
+            animateSizes={animateWindowSizes}
+            renderWindowContent={false}
+          />
+        </LayoutContext.Provider>
       {collectScreenSlots(committedConfig).map((slot) => {
-        const rect = screenRects.get(slot.path);
+        const rect = screenRects.get(slot.screen.id);
         const renderContent = screenMap.get(slot.screen.screenTemplate);
         if (!rect) return null;
         return (
@@ -1052,6 +1155,8 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
           </LayoutContext.Provider>
         </View>
       ) : null}
+        <Animated.View style={highlightAnimatedStyle} pointerEvents="none" />
+      </OutlineRegistryContext.Provider>
     </View>
   );
 });
@@ -1443,7 +1548,7 @@ function computeInnerScreenRects(node: LayoutNode, rect: PixelRect, theme: Layou
   const contentRect = getContentRect(rect, path, theme, visibilityMap);
 
   if (node.type === 'screen') {
-    result.set(path, contentRect);
+    result.set(node.id, contentRect);
     return result;
   }
 
@@ -1638,6 +1743,8 @@ const EdgeButton = ({
     onActionEvent,
     renderOnlyActionKey,
   } = React.useContext(LayoutContext);
+  const { register, unregister } = React.useContext(OutlineRegistryContext);
+  const elementRef = React.useRef<any>(null);
 
   const thickness = theme.borderWidth;
   const insetPercent = ((1 - theme.buttonSpanRatio) / 2) * 100;
@@ -1657,6 +1764,13 @@ const EdgeButton = ({
     return null;
   }
 
+  React.useEffect(() => {
+    register?.(action.key, elementRef);
+    return () => {
+      unregister?.(action.key);
+    };
+  }, [action.key, register, unregister]);
+
   const baseStyle = {
     position: 'absolute' as const,
     [side]: 0,
@@ -1669,6 +1783,7 @@ const EdgeButton = ({
 
   const inner = (
     <Pressable
+      ref={elementRef}
       disabled={!isInteractive}
       onHoverIn={() => {
         if (!isInteractive) {
@@ -1749,6 +1864,8 @@ const SplitGap = ({
     onActionEvent,
     renderOnlyActionKey,
   } = React.useContext(LayoutContext);
+  const { register, unregister } = React.useContext(OutlineRegistryContext);
+  const elementRef = React.useRef<any>(null);
 
   const isDraggingRef = React.useRef(false);
   const handledPressRef = React.useRef(false);
@@ -1761,6 +1878,13 @@ const SplitGap = ({
   const visualConfig = getButtonVisualConfig(theme, layerMode, buttonColor, isHoveredVisual);
   const classNameStyles = useResolveClassNames(visualConfig.className ?? '');
   const radius = Math.max(full / 2 + getButtonRadiusOffset(theme, layerMode), 0);
+
+  React.useEffect(() => {
+    register?.(action.key, elementRef);
+    return () => {
+      unregister?.(action.key);
+    };
+  }, [action.key, register, unregister]);
 
   const baseButtonStyle = {
     borderRadius: radius,
@@ -1785,7 +1909,7 @@ const SplitGap = ({
       isDraggingRef.current = false;
       handledPressRef.current = false;
       suppressHoverRef.current = true;
-      onActionEvent?.({ type: 'press-start', target: 'gap', id: `${path}:${index}`, x: startX, y: startY, action });
+      onActionEvent?.({ type: 'press-start', target: 'gap', id: action.key, x: startX, y: startY, action });
 
       const handlePointerMove = (e: PointerEvent) => {
         const dx = e.clientX - startX;
@@ -1793,7 +1917,7 @@ const SplitGap = ({
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (!isDraggingRef.current && dist > 3) {
           isDraggingRef.current = true;
-          onActionEvent?.({ type: 'drag-start', target: 'gap', id: `${path}:${index}`, action });
+          onActionEvent?.({ type: 'drag-start', target: 'gap', id: action.key, action });
           onGapDragStart?.(path, index, startX, startY);
         }
         if (isDraggingRef.current) {
@@ -1807,7 +1931,7 @@ const SplitGap = ({
         window.removeEventListener('pointerup', handlePointerUp);
         if (isDraggingRef.current) {
           isDraggingRef.current = false;
-          onActionEvent?.({ type: 'drag-end', target: 'gap', id: `${path}:${index}`, x: e.clientX, y: e.clientY, action });
+          onActionEvent?.({ type: 'drag-end', target: 'gap', id: action.key, x: e.clientX, y: e.clientY, action });
           onGapDragEnd?.(path, index, e.clientX, e.clientY);
           handledPressRef.current = true;
         } else {
@@ -1816,10 +1940,10 @@ const SplitGap = ({
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist < 3) {
             // Short drag interpreted as a click
-            onActionEvent?.({ type: 'press-end', target: 'gap', id: `${path}:${index}`, x: e.clientX, y: e.clientY, action });
+            onActionEvent?.({ type: 'press-end', target: 'gap', id: action.key, x: e.clientX, y: e.clientY, action });
           } else {
             handledPressRef.current = true;
-            onActionEvent?.({ type: 'press-end', target: 'gap', id: `${path}:${index}`, x: e.clientX, y: e.clientY, action });
+            onActionEvent?.({ type: 'press-end', target: 'gap', id: action.key, x: e.clientX, y: e.clientY, action });
           }
         }
       };
@@ -1831,10 +1955,11 @@ const SplitGap = ({
   );
 
   const pressableProps = {
+    ref: elementRef,
     disabled: !isInteractive,
     onHoverIn: () => {
       if (!isInteractive) return;
-      onActionEvent?.({ type: 'hover-in', target: 'gap', id: `${path}:${index}`, action });
+      onActionEvent?.({ type: 'hover-in', target: 'gap', id: action.key, action });
     },
     onHoverOut: () => {
       if (!isInteractive) return;
@@ -1845,11 +1970,11 @@ const SplitGap = ({
       if (suppressHoverRef.current) {
         return;
       }
-      onActionEvent?.({ type: 'press-start', target: 'gap', id: `${path}:${index}`, x: 0, y: 0, action });
+      onActionEvent?.({ type: 'press-start', target: 'gap', id: action.key, x: 0, y: 0, action });
     },
     onPressOut: () => {
       if (!isInteractive) return;
-      onActionEvent?.({ type: 'press-end', target: 'gap', id: `${path}:${index}`, x: 0, y: 0, action });
+      onActionEvent?.({ type: 'press-end', target: 'gap', id: action.key, x: 0, y: 0, action });
     },
     onPress: () => {
       if (!isInteractive) return;

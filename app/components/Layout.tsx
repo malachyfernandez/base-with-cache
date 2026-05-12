@@ -51,79 +51,112 @@ const LayoutComponent = ({
     [onActionStateChange],
   );
 
-  const handleActionEvent = React.useCallback(
-    (event: ActionEvent) => {
-      switch (event.type) {
-        /* ─── Condition: start the preview animated layer ─── */
-        case 'hover-in': {
-          const isPreviewTarget = event.target === 'button' || event.target === 'gap';
-          if (isPreviewTarget && event.action) {
-            displayRef.current?.showPreview(event.action);
-          }
-          reportAction({ phase: 'hover', target: event.target, id: event.id });
-          break;
+  const [outlineTarget, setOutlineTarget] = React.useState<string | null>(null);
+
+  /* ───────── Hover logic ───────── */
+  const handleHoverIn = React.useCallback(
+    (event: ActionEvent & { type: 'hover-in' }) => {
+      const isPreviewTarget = event.target === 'button' || event.target === 'gap';
+      let nextOutlineTarget = event.id;
+      if (isPreviewTarget && event.action) {
+        nextOutlineTarget = displayRef.current?.showPreview(event.action) ?? event.id;
+      }
+      setOutlineTarget(nextOutlineTarget);
+      reportAction({ phase: 'hover', target: event.target, id: event.id });
+    },
+    [reportAction],
+  );
+
+  const handleHoverOut = React.useCallback(() => {
+    displayRef.current?.hidePreview();
+    setOutlineTarget(null);
+    reportAction({ phase: 'idle' });
+  }, [reportAction]);
+
+  /* ───────── Press logic ───────── */
+  const handlePressStart = React.useCallback(
+    (event: ActionEvent & { type: 'press-start' }) => {
+      const isPreviewTarget = event.target === 'button' || event.target === 'gap';
+      if (isPreviewTarget && event.action) {
+        displayRef.current?.showPreview(event.action);
+      }
+      reportAction({ phase: 'press', target: event.target, id: event.id, x: event.x, y: event.y });
+    },
+    [reportAction],
+  );
+
+  const handlePressEnd = React.useCallback(
+    (event: ActionEvent & { type: 'press-end' }) => {
+      const current = currentActionRef.current;
+      const isSameAction = current.phase === 'press' && current.id === event.id;
+
+      if (isSameAction) {
+        if (event.target === 'close') {
+          displayRef.current?.closeScreen(event.id);
+        } else if (event.action) {
+          /* Button or gap press completed → create the screen */
+          displayRef.current?.executeAction(event.action);
         }
+      }
 
-        /* ─── Condition: play the fade-away animation ─── */
-        case 'hover-out':
-          displayRef.current?.hidePreview();
-          reportAction({ phase: 'idle' });
-          break;
+      /* Close handles its own cleanup; hidePreview otherwise */
+      if (event.target !== 'close') {
+        displayRef.current?.hidePreview();
+      }
 
-        case 'drag-start': {
-          const current = currentActionRef.current;
-          if (current.phase === 'press' && current.id === event.id) {
-            displayRef.current?.hidePreview();
-            reportAction({ phase: 'drag', target: 'gap', id: event.id });
-          }
-          break;
-        }
+      reportAction({ phase: 'idle' });
+    },
+    [reportAction],
+  );
 
-        case 'drag-end':
-          reportAction({ phase: 'idle' });
-          break;
-
-        /* ─── Condition: user started a press ─── */
-        case 'press-start': {
-          const isPreviewTarget = event.target === 'button' || event.target === 'gap';
-          if (isPreviewTarget && event.action) {
-            displayRef.current?.showPreview(event.action);
-          }
-          reportAction({ phase: 'press', target: event.target, id: event.id, x: event.x, y: event.y });
-          break;
-        }
-
-        /* ─── Condition: play the "add new screen" action ─── */
-        case 'press-end': {
-          const current = currentActionRef.current;
-          const isSameAction = current.phase === 'press' && current.id === event.id;
-
-          if (isSameAction) {
-            if (event.target === 'close') {
-              displayRef.current?.closeScreen(event.id);
-            } else if (event.action) {
-              /* Button or gap press completed → create the screen */
-              displayRef.current?.executeAction(event.action);
-            }
-          }
-
-          /* Close handles its own cleanup; hidePreview otherwise */
-          if (event.target !== 'close') {
-            displayRef.current?.hidePreview();
-          }
-
-          reportAction({ phase: 'idle' });
-          break;
-        }
+  /* ───────── Drag logic ───────── */
+  const handleDragStart = React.useCallback(
+    (event: ActionEvent & { type: 'drag-start' }) => {
+      const current = currentActionRef.current;
+      if (current.phase === 'press' && current.id === event.id) {
+        displayRef.current?.hidePreview();
+        reportAction({ phase: 'drag', target: 'gap', id: event.id });
       }
     },
     [reportAction],
+  );
+
+  const handleDragEnd = React.useCallback(() => {
+    reportAction({ phase: 'idle' });
+  }, [reportAction]);
+
+  /* ───────── Dispatcher ───────── */
+  const handleActionEvent = React.useCallback(
+    (event: ActionEvent) => {
+      switch (event.type) {
+        case 'hover-in':
+          handleHoverIn(event);
+          break;
+        case 'hover-out':
+          handleHoverOut();
+          break;
+        case 'press-start':
+          handlePressStart(event);
+          break;
+        case 'press-end':
+          handlePressEnd(event);
+          break;
+        case 'drag-start':
+          handleDragStart(event);
+          break;
+        case 'drag-end':
+          handleDragEnd();
+          break;
+      }
+    },
+    [handleHoverIn, handleHoverOut, handlePressStart, handlePressEnd, handleDragStart, handleDragEnd],
   );
 
   return (
     <LayoutDisplay
       ref={displayRef}
       {...displayProps}
+      outlineTarget={outlineTarget}
       onActionEvent={handleActionEvent}
     />
   );

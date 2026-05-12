@@ -43,7 +43,7 @@ const MainPage: React.FC = () => {
     const [terminalLines, setTerminalLines] = useState<string[]>(['Layout terminal ready. Try: swap inst-1 inst-4, next 2, next blank, use-hover-next, swap-hover inst-2']);
 
     React.useEffect(() => {
-        console.log('[MainPage] config state updated:', JSON.stringify(config, null, 2));
+        // config state updated
     }, [config]);
 
     const extractScreenSizes = React.useCallback((node: LayoutNode): Record<string, string> => {
@@ -60,8 +60,6 @@ const MainPage: React.FC = () => {
     }, []);
 
     const handleConfigChange = React.useCallback((newConfig: LayoutNode) => {
-        const configStr = JSON.stringify(newConfig);
-        console.log('[MainPage] onConfigChange called, config length:', configStr.length, 'screenSizes:', extractScreenSizes(newConfig));
         setConfig(newConfig);
     }, [extractScreenSizes]);
 
@@ -72,7 +70,6 @@ const MainPage: React.FC = () => {
         const mutateConfig = (updater: (node: LayoutNode) => LayoutNode) => {
             setConfig((current) => {
                 const next = updater(current);
-                console.log('[MainPage] terminal command config:', JSON.stringify(next, null, 2));
                 return next;
             });
         };
