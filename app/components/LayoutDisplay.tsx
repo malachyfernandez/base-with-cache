@@ -31,13 +31,17 @@ export const LayoutContext = React.createContext<{
   renderOnlyActionKey?: string | null;
   animationPhase?: 'expand' | 'contract' | null;
   animationDurationMs?: number;
+  themeTransitionDurationMs?: number;
+  addPageButtonsEnabled?: boolean;
   onScreenHoverIn?: (instanceId: string, templateId: string | number, path: string) => void;
-  onScreenHoverOut?: () => void;
+  onScreenHoverOut?: (instanceId: string) => void;
+  onScreenDragStart?: (instanceId: string, templateId: string | number, path: string) => void;
+  onScreenDragEnd?: (instanceId: string, templateId: string | number, path: string, clientX: number, clientY: number) => void;
   onGapDragStart?: (path: string, index: number, clientX: number, clientY: number) => void;
   onGapDragMove?: (path: string, index: number, clientX: number, clientY: number) => void;
   onGapDragEnd?: (path: string, index: number, clientX: number, clientY: number) => void;
   onActionEvent?: (event: ActionEvent) => void;
-}>({ layerMode: 'window', animationDurationMs: 280 });
+}>({ layerMode: 'window', animationDurationMs: 280, themeTransitionDurationMs: 300, addPageButtonsEnabled: true });
 
 export const OutlineRegistryContext = React.createContext<{
   register?: (id: string, ref: React.RefObject<any>) => void;
@@ -99,6 +103,8 @@ export type LayoutTheme = {
   canvasColor: OKLCHColor;
   panelColor: OKLCHColor;
   buttonColor: OKLCHColor;
+  outerButtonOpacity?: number;
+  gapButtonOpacity?: number;
   contrastStep: number;
   hoverBrightness: number;
   buttonClassName?: string;
@@ -149,9 +155,12 @@ type LayoutProps = {
   hoverDelayMs?: number;
   nextScreenTemplate?: string | number;
   outlineTarget?: string | null;
+  addPageButtonsEnabled?: boolean;
+  themeTransitionDurationMs?: number;
   onConfigChange?: (config: LayoutNode) => void;
   onHoverInfoChange?: (info: LayoutHoverInfo | null) => void;
   onActionEvent?: (event: ActionEvent) => void;
+  onSwapDrop?: (source: LayoutHoverInfo & { type: 'component' }, target: LayoutHoverInfo | null) => void;
 };
 
 export type ScreenSlotProps = {
@@ -165,11 +174,13 @@ export type LayoutHoverInfo =
 
 export type ActionEvent =
   | { type: 'hover-in'; target: 'button' | 'screen' | 'gap'; id: string; action?: LayoutAction }
-  | { type: 'hover-out' }
+  | { type: 'hover-out'; target: 'button' | 'screen' | 'gap'; id: string }
   | { type: 'press-start'; target: 'button' | 'close' | 'gap'; id: string; x: number; y: number; action?: LayoutAction }
   | { type: 'press-end'; target: 'button' | 'close' | 'gap'; id: string; x: number; y: number; action?: LayoutAction }
   | { type: 'drag-start'; target: 'gap'; id: string; action?: LayoutAction }
-  | { type: 'drag-end'; target: 'gap'; id: string; x: number; y: number; action?: LayoutAction };
+  | { type: 'drag-end'; target: 'gap'; id: string; x: number; y: number; action?: LayoutAction }
+  | { type: 'swap-drag-start'; target: 'screen'; id: string }
+  | { type: 'swap-drag-end'; target: 'screen'; id: string; x: number; y: number };
 
 export type Frame = {
   x: number;
@@ -293,6 +304,8 @@ const DEFAULT_THEME: LayoutTheme = {
   contrastStep: 0.08,
   hoverBrightness: 0.1,
   buttonColor: srgbToOklch(222, 171, 238),
+  outerButtonOpacity: 1,
+  gapButtonOpacity: 1,
   wireframeVisible: true,
   wireframeBorderColor: srgbToOklch(255, 255, 255),
   wireframeBorderOpacity: 0.85,
@@ -329,6 +342,8 @@ const WEB_STAGE_DELAY_MS = 24;
 const debugLayout = (...args: unknown[]) => {
   // Debug logging disabled
 };
+
+const layoutDebugLog = (..._args: unknown[]) => {};
 
 const scheduleOnWeb = (callback: () => void, delayMs: number) => {
   if (Platform.OS === 'web') {
@@ -372,7 +387,6 @@ function checkOscillation(recent: { configStr: string; time: number }[], configS
 }
 
 const layoutLog = (tag: string, ...args: unknown[]) => {
-  console.log(`[Layout:${tag}]`, ...args);
 };
 
 const getRelativeRect = (element: HTMLElement, container: HTMLElement): Frame => {
@@ -399,7 +413,7 @@ const extractScreenSizes = (node: LayoutNode): Record<string, string> => {
   return result;
 };
 
-const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, children, theme, buttonIcon, hoverDelayMs = 300, nextScreenTemplate, outlineTarget, onConfigChange, onHoverInfoChange, onActionEvent }: LayoutProps, ref) => {
+const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, children, theme, buttonIcon, hoverDelayMs = 300, nextScreenTemplate, outlineTarget, addPageButtonsEnabled = true, themeTransitionDurationMs = 300, onConfigChange, onHoverInfoChange, onActionEvent, onSwapDrop }: LayoutProps, ref) => {
   const screenMap = new Map<string | number, ReactNode>();
 
   Children.forEach(children, (child) => {
@@ -444,14 +458,20 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
   const hoveredActionKeyRef = React.useRef<string | null>(null);
   const hoveredIntroConfigRef = React.useRef<LayoutNode | null>(null);
   const hoveredDurationRef = React.useRef(280);
+  const hoverInfoTargetRef = React.useRef<{ target: 'button' | 'screen' | 'gap'; id: string } | null>(null);
   const skipNextHoverOutRef = React.useRef(false);
   const containerSizeRef = React.useRef({ width: 1000, height: 600 });
   const committedConfigRef = React.useRef(config);
   const lastEmittedConfigRef = React.useRef<LayoutNode>(config);
   const liveDragConfigRef = React.useRef<LayoutNode | null>(null);
+  const pendingResizeConfigRef = React.useRef<LayoutNode | null>(null);
+  const resizeFrameRef = React.useRef<number | null>(null);
   const recentEmissionsRef = React.useRef<{ configStr: string; time: number }[]>([]);
   committedConfigRef.current = committedConfig;
   const closeInProgressRef = React.useRef(false);
+  const syncingFromPropRef = React.useRef(false);
+  const hoverInfoRef = React.useRef<LayoutHoverInfo | null>(null);
+  const swapDragSourceRef = React.useRef<LayoutHoverInfo & { type: 'component' } | null>(null);
   const resizeStateRef = React.useRef<{
     path: string;
     index: number;
@@ -464,6 +484,7 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
   const wireframeOpacity = useSharedValue(0);
   const wireframeAnimatedStyle = useAnimatedStyle(() => ({ opacity: wireframeOpacity.value }));
   const [containerSize, setContainerSize] = React.useState({ width: 1000, height: 600 });
+  const [activeDragSourceId, setActiveDragSourceId] = React.useState<string | null>(null);
 
   /* ─── Highlight box spring tracking ─── */
   const containerRef = React.useRef<View>(null);
@@ -487,6 +508,11 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
     () => ({ register: registerElementRef, unregister: unregisterElementRef }),
     [registerElementRef, unregisterElementRef],
   );
+
+  const reportHoverInfo = React.useCallback((info: LayoutHoverInfo | null) => {
+    hoverInfoRef.current = info;
+    onHoverInfoChange?.(info);
+  }, [onHoverInfoChange]);
 
   const springConfig = { damping: 20, stiffness: 250, mass: 0.8 };
 
@@ -526,6 +552,7 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
     animationFrameRefs.current = [];
 
     layoutLog('effect', 'resetting internal state to config prop', { screenSizes: extractScreenSizes(config) });
+    syncingFromPropRef.current = true;
     setCommittedConfig(config);
     setWindowConfig(config);
     setAnimateWindowSizes(false);
@@ -543,6 +570,11 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
   }, [config]);
 
   React.useEffect(() => {
+    if (syncingFromPropRef.current) {
+      syncingFromPropRef.current = false;
+      lastEmittedConfigRef.current = committedConfig;
+      return;
+    }
     const equalToProp = configsEqual(committedConfig, config);
     const equalToLast = configsEqual(committedConfig, lastEmittedConfigRef.current);
     layoutLog('effect', 'committedConfigChanged', { equalToProp, equalToLast, hasResize: !!resizeStateRef.current });
@@ -573,6 +605,10 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
     return () => {
       animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
       animationFrameRefs.current = [];
+      if (resizeFrameRef.current !== null) {
+        cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
     };
   }, []);
 
@@ -622,9 +658,59 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
   }, [screenRects, wireframeConfig, wireframeVisibilityMap, containerSize.width, containerSize.height, resolvedTheme]);
 
   React.useEffect(() => {
+    const hoverInfo = hoverInfoRef.current;
+    if (outlineTarget !== 'cursor' || !hoverInfo) {
+      return;
+    }
+
+    console.warn('[Layout:hover-outline-mismatch]', {
+      outlineTarget,
+      hoverInfo,
+      activeDragSourceId,
+      hoverInfoTarget: hoverInfoTargetRef.current,
+      swapDragSource: swapDragSourceRef.current,
+      committedScreenIds: Array.from(screenRects.keys()),
+      outlineScreenIds: Array.from(outlineScreenRects.keys()),
+      hasWireframeConfig: !!wireframeConfig,
+      containerSize,
+    });
+  }, [activeDragSourceId, containerSize, outlineScreenRects, outlineTarget, screenRects, wireframeConfig]);
+
+  React.useEffect(() => {
     if (!outlineTarget) {
       highlightOpacity.value = withTiming(0, { duration: 80 });
       return;
+    }
+
+    if (outlineTarget === 'cursor') {
+      const container = containerRef.current as unknown as HTMLElement | null;
+      if (!container) {
+        highlightOpacity.value = withTiming(0, { duration: 80 });
+        return;
+      }
+
+      const CURSOR_BOX_SIZE = 100;
+      const updateCursorHighlight = (clientX: number, clientY: number) => {
+        const rect = container.getBoundingClientRect();
+        highlightX.value = withSpring(clientX - rect.left - CURSOR_BOX_SIZE / 2, springConfig);
+        highlightY.value = withSpring(clientY - rect.top - CURSOR_BOX_SIZE / 2, springConfig);
+        highlightW.value = withSpring(CURSOR_BOX_SIZE, springConfig);
+        highlightH.value = withSpring(CURSOR_BOX_SIZE, springConfig);
+      };
+      const handleMouseMove = (e: MouseEvent) => {
+        updateCursorHighlight(e.clientX, e.clientY);
+      };
+
+      container.addEventListener('mousemove', handleMouseMove);
+      const currentEvent = (window.event instanceof MouseEvent || window.event instanceof PointerEvent) ? window.event : null;
+      if (currentEvent) {
+        updateCursorHighlight(currentEvent.clientX, currentEvent.clientY);
+      }
+      highlightOpacity.value = withTiming(1, { duration: 120 });
+
+      return () => {
+        container.removeEventListener('mousemove', handleMouseMove);
+      };
     }
 
     const screenRect = outlineScreenRects.get(outlineTarget);
@@ -685,26 +771,38 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
 
   const handleActionHoverIn = React.useCallback(
     (action: LayoutAction) => {
+      layoutDebugLog('[LayoutDisplay:handleActionHoverIn] START', { actionKey: action.key, actionType: action.type });
       if (resizeStateRef.current) {
+        layoutDebugLog('[LayoutDisplay:handleActionHoverIn] ABORTED - resize in progress');
+        return null;
+      }
+      if (addPageButtonsEnabled === false) {
+        layoutDebugLog('[LayoutDisplay:handleActionHoverIn] ABORTED - add page buttons disabled');
         return null;
       }
       hoveredActionKeyRef.current = action.key;
 
       const previewInstanceId = generateInstanceId();
+      layoutDebugLog('[LayoutDisplay:handleActionHoverIn] generated previewInstanceId', previewInstanceId);
       const plan = buildLayoutActionPlan(committedConfig, action, nextScreenTemplate ?? 'blank', previewInstanceId);
       const durationMs = resolveAnimationDuration(committedConfig, plan.finalConfig);
       hoveredDurationRef.current = durationMs;
       setAnimationDurationMs(durationMs);
+      layoutDebugLog('[LayoutDisplay:handleActionHoverIn] animation duration', durationMs);
 
       animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
       animationFrameRefs.current = [];
+      layoutDebugLog('[LayoutDisplay:handleActionHoverIn] cleared existing animation frames');
 
       setAnimationPhase('expand');
       setHoveredActionKey(action.key);
       hoveredActionKeyRef.current = action.key;
-      onHoverInfoChange?.({ type: 'button', buttonId: action.key, action });
+      hoverInfoTargetRef.current = { target: action.type === 'edge' ? 'button' : 'gap', id: action.key };
+      reportHoverInfo({ type: 'button', buttonId: action.key, action });
+      layoutDebugLog('[LayoutDisplay:handleActionHoverIn] set hover state and reported info');
 
       const delayedFrame = scheduleOnWeb(() => {
+        layoutDebugLog('[LayoutDisplay:handleActionHoverIn] delayed frame executing');
         hoveredIntroConfigRef.current = plan.introConfig;
         commitWebLayoutStage(() => {
           setAnimateWireframeSizes(false);
@@ -713,10 +811,12 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
         });
 
         const frameOne = scheduleOnWeb(() => {
+          layoutDebugLog('[LayoutDisplay:handleActionHoverIn] frameOne executing');
           commitWebLayoutStage(() => {
             setAnimateWireframeSizes(true);
           });
           const frameTwo = scheduleOnWeb(() => {
+            layoutDebugLog('[LayoutDisplay:handleActionHoverIn] frameTwo executing');
             commitWebLayoutStage(() => {
               setWireframeConfig(plan.finalConfig);
             });
@@ -731,35 +831,48 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
       }, hoverDelayMs);
 
       animationFrameRefs.current.push(delayedFrame);
+      layoutDebugLog('[LayoutDisplay:handleActionHoverIn] scheduled delayed frame, returning previewInstanceId');
       return previewInstanceId;
     },
     [committedConfig, generateInstanceId, hoverDelayMs, nextScreenTemplate, onHoverInfoChange, resolveAnimationDuration, resolvedTheme.wireframeFadeInHoldDuration],
   );
 
   const handleActionHoverOut = React.useCallback(() => {
+    layoutDebugLog('[LayoutDisplay:handleActionHoverOut] START');
     if (resizeStateRef.current) {
+      layoutDebugLog('[LayoutDisplay:handleActionHoverOut] ABORTED - resize in progress');
       return;
     }
     if (Date.now() < suppressHoverOutUntilRef.current) {
+      layoutDebugLog('[LayoutDisplay:handleActionHoverOut] ABORTED - suppressed until', suppressHoverOutUntilRef.current);
       return;
     }
 
     if (skipNextHoverOutRef.current) {
+      layoutDebugLog('[LayoutDisplay:handleActionHoverOut] SKIPPING - skipNextHoverOut flag set');
       skipNextHoverOutRef.current = false;
       return;
     }
 
     if (closeInProgressRef.current) {
+      layoutDebugLog('[LayoutDisplay:handleActionHoverOut] ABORTED - close in progress');
       layoutLog('action', 'handleActionHoverOut skipped — close in progress');
       return;
     }
 
+    layoutDebugLog('[LayoutDisplay:handleActionHoverOut] clearing animation frames');
     animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
     animationFrameRefs.current = [];
     setAnimationPhase('contract');
     setHoveredActionKey(null);
     hoveredActionKeyRef.current = null;
-    onHoverInfoChange?.(null);
+    if (hoverInfoTargetRef.current?.target === 'screen') {
+      layoutDebugLog('[LayoutDisplay:handleActionHoverOut] preserved screen hover target while clearing preview', hoverInfoTargetRef.current);
+    } else {
+      hoverInfoTargetRef.current = null;
+      reportHoverInfo(null);
+      layoutDebugLog('[LayoutDisplay:handleActionHoverOut] cleared hover state');
+    }
 
     hoveredIntroConfigRef.current = null;
 
@@ -767,6 +880,7 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
     wireframeOpacity.value = withTiming(0, { duration: 120 });
 
     const clearAnimationTask = scheduleOnWeb(() => {
+      layoutDebugLog('[LayoutDisplay:handleActionHoverOut] clearAnimationTask executing');
       commitWebLayoutStage(() => {
         setAnimateWireframeSizes(false);
         setWireframeConfig(null);
@@ -775,20 +889,68 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
     }, 150 + resolvedTheme.wireframeFadeOutHoldDuration);
 
     animationFrameRefs.current.push(clearAnimationTask);
-  }, [onHoverInfoChange, resolvedTheme.wireframeFadeOutHoldDuration]);
+  }, [addPageButtonsEnabled, reportHoverInfo, resolvedTheme.wireframeFadeOutHoldDuration]);
 
   const handleScreenHoverIn = React.useCallback(
     (instanceId: string, templateId: string | number, slotId: string) => {
+      layoutDebugLog('[LayoutDisplay:handleScreenHoverIn] START', { instanceId, templateId, slotId });
+      hoverInfoTargetRef.current = { target: 'screen', id: instanceId };
+      layoutDebugLog('[LayoutDisplay:handleScreenHoverIn] set hoverInfoTargetRef', { target: 'screen', id: instanceId });
       onActionEvent?.({ type: 'hover-in', target: 'screen', id: instanceId });
-      onHoverInfoChange?.({ type: 'component', instanceId, templateId, slotId });
+      layoutDebugLog('[LayoutDisplay:handleScreenHoverIn] dispatched hover-in event');
+      reportHoverInfo({ type: 'component', instanceId, templateId, slotId });
+      layoutDebugLog('[LayoutDisplay:handleScreenHoverIn] reported hover info');
     },
-    [onHoverInfoChange, onActionEvent],
+    [reportHoverInfo, onActionEvent],
   );
 
-  const handleScreenHoverOut = React.useCallback(() => {
-    onActionEvent?.({ type: 'hover-out' });
-    onHoverInfoChange?.(null);
-  }, [onHoverInfoChange, onActionEvent]);
+  const handleScreenHoverOut = React.useCallback((instanceId: string) => {
+    layoutDebugLog('[LayoutDisplay:handleScreenHoverOut] START', { instanceId });
+    const current = hoverInfoTargetRef.current;
+    layoutDebugLog('[LayoutDisplay:handleScreenHoverOut] current hoverInfoTargetRef', current);
+    onActionEvent?.({ type: 'hover-out', target: 'screen', id: instanceId });
+    layoutDebugLog('[LayoutDisplay:handleScreenHoverOut] dispatched hover-out event');
+    if (current?.target === 'screen' && current.id === instanceId) {
+      hoverInfoTargetRef.current = null;
+      reportHoverInfo(null);
+      layoutDebugLog('[LayoutDisplay:handleScreenHoverOut] cleared hover info');
+    } else {
+      layoutDebugLog('[LayoutDisplay:handleScreenHoverOut] DID NOT clear hover info - mismatch', { currentTarget: current?.target, currentId: current?.id, instanceId });
+    }
+  }, [reportHoverInfo, onActionEvent]);
+
+  const handleScreenDragStart = React.useCallback((instanceId: string, templateId: string | number, slotId: string) => {
+    layoutDebugLog('[LayoutDisplay:handleScreenDragStart] START', { instanceId, templateId, slotId });
+    const source = { type: 'component' as const, instanceId, templateId, slotId };
+    swapDragSourceRef.current = source;
+    setActiveDragSourceId(instanceId);
+    const sourceRect = screenRects.get(instanceId);
+    if (sourceRect) {
+      highlightX.value = sourceRect.x;
+      highlightY.value = sourceRect.y;
+      highlightW.value = sourceRect.width;
+      highlightH.value = sourceRect.height;
+      highlightOpacity.value = 1;
+    }
+    layoutDebugLog('[LayoutDisplay:handleScreenDragStart] set swapDragSourceRef', source);
+    reportHoverInfo(source);
+    layoutDebugLog('[LayoutDisplay:handleScreenDragStart] reported hover info as source');
+    onActionEvent?.({ type: 'swap-drag-start', target: 'screen', id: instanceId });
+    layoutDebugLog('[LayoutDisplay:handleScreenDragStart] dispatched swap-drag-start event');
+  }, [highlightH, highlightOpacity, highlightW, highlightX, highlightY, reportHoverInfo, onActionEvent, screenRects]);
+
+  const handleScreenDragEnd = React.useCallback((instanceId: string, templateId: string | number, slotId: string, clientX: number, clientY: number) => {
+    layoutDebugLog('[LayoutDisplay:handleScreenDragEnd] START', { instanceId, templateId, slotId, clientX, clientY });
+    const source = swapDragSourceRef.current ?? { type: 'component' as const, instanceId, templateId, slotId };
+    layoutDebugLog('[LayoutDisplay:handleScreenDragEnd] swapDragSourceRef', source);
+    const target = hoverInfoRef.current;
+    layoutDebugLog('[LayoutDisplay:handleScreenDragEnd] hoverInfoRef.current (target)', target);
+    onActionEvent?.({ type: 'swap-drag-end', target: 'screen', id: instanceId, x: clientX, y: clientY });
+    onSwapDrop?.(source, hoverInfoRef.current);
+    layoutDebugLog('[LayoutDisplay:handleScreenDragEnd] dispatched swap-drag-end event');
+    swapDragSourceRef.current = null;
+    setActiveDragSourceId(null);
+  }, [onActionEvent, onSwapDrop]);
 
   const handleActionPress = React.useCallback((action: LayoutAction) => {
     const screenTemplateToCreate = nextScreenTemplate ?? 'blank';
@@ -799,6 +961,7 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
     skipNextHoverOutRef.current = true;
     setHoveredActionKey(null);
     hoveredActionKeyRef.current = null;
+    hoverInfoTargetRef.current = null;
     hoveredIntroConfigRef.current = null;
     animationFrameRefs.current.forEach((frameId) => clearScheduledTask(frameId));
     animationFrameRefs.current = [];
@@ -961,11 +1124,19 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
       }));
 
       liveDragConfigRef.current = newConfig;
-      setCommittedConfig(newConfig);
-      setWindowConfig(newConfig);
-      setControlsConfig(newConfig);
-      setAnimateWindowSizes(false);
-      setAnimateControlSizes(false);
+      pendingResizeConfigRef.current = newConfig;
+      if (resizeFrameRef.current !== null) return;
+      resizeFrameRef.current = requestAnimationFrame(() => {
+        resizeFrameRef.current = null;
+        const pendingConfig = pendingResizeConfigRef.current;
+        if (!pendingConfig) return;
+        pendingResizeConfigRef.current = null;
+        setCommittedConfig(pendingConfig);
+        setWindowConfig(pendingConfig);
+        setControlsConfig(pendingConfig);
+        setAnimateWindowSizes(false);
+        setAnimateControlSizes(false);
+      });
     },
     [],
   );
@@ -980,6 +1151,19 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
       const state = resizeStateRef.current;
       const totalDrag = Math.sqrt((state.startX - clientX) ** 2 + (state.startY - clientY) ** 2);
       resizeStateRef.current = null;
+      if (resizeFrameRef.current !== null) {
+        cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
+      const pendingConfig = pendingResizeConfigRef.current;
+      if (pendingConfig) {
+        pendingResizeConfigRef.current = null;
+        setCommittedConfig(pendingConfig);
+        setWindowConfig(pendingConfig);
+        setControlsConfig(pendingConfig);
+        setAnimateWindowSizes(false);
+        setAnimateControlSizes(false);
+      }
 
       if (totalDrag < 3) {
         layoutLog('drag', 'dragEnd interpreted as split click');
@@ -1037,7 +1221,7 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
       }}
     >
       <OutlineRegistryContext.Provider value={outlineRegistryValue}>
-        <LayoutContext.Provider value={{ buttonIcon, layerMode: 'window', animationPhase, animationDurationMs, onScreenHoverIn: handleScreenHoverIn, onScreenHoverOut: handleScreenHoverOut, onActionEvent }}>
+        <LayoutContext.Provider value={{ buttonIcon, layerMode: 'window', animationPhase, animationDurationMs, themeTransitionDurationMs, addPageButtonsEnabled, onScreenHoverIn: handleScreenHoverIn, onScreenHoverOut: handleScreenHoverOut, onScreenDragStart: handleScreenDragStart, onScreenDragEnd: handleScreenDragEnd, onActionEvent }}>
           <LayoutRenderer
             node={windowConfig}
             screenMap={screenMap}
@@ -1063,8 +1247,11 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
             rect={rect}
             theme={resolvedTheme}
             transitionEnabled={overlayTransitionsEnabled}
+            isDragSource={activeDragSourceId === slot.screen.id}
             onHoverIn={handleScreenHoverIn}
             onHoverOut={handleScreenHoverOut}
+            onDragStart={handleScreenDragStart}
+            onDragEnd={handleScreenDragEnd}
           >
             {renderContent ?? <FallbackScreen screenTemplate={slot.screen.screenTemplate} />}
           </ScreenContentOverlay>
@@ -1078,8 +1265,12 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
             hoveredActionKey,
             animationPhase,
             animationDurationMs,
+            themeTransitionDurationMs,
+            addPageButtonsEnabled,
             onScreenHoverIn: handleScreenHoverIn,
             onScreenHoverOut: handleScreenHoverOut,
+            onScreenDragStart: handleScreenDragStart,
+            onScreenDragEnd: handleScreenDragEnd,
             onGapDragStart: handleGapDragStart,
             onGapDragMove: handleGapDragMove,
             onGapDragEnd: handleGapDragEnd,
@@ -1111,6 +1302,8 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
               hoveredActionKey,
               animationPhase,
               animationDurationMs,
+              themeTransitionDurationMs,
+              addPageButtonsEnabled,
               onActionEvent,
             }}
           >
@@ -1138,6 +1331,8 @@ const Layout = React.forwardRef<LayoutDisplayRef, LayoutProps>(({ config, childr
               renderOnlyActionKey: hoveredActionKey,
               animationPhase,
               animationDurationMs,
+              themeTransitionDurationMs,
+              addPageButtonsEnabled,
               onActionEvent,
             }}
           >
@@ -1165,7 +1360,7 @@ export const LayoutScreen = (_props: ScreenSlotProps) => null;
 
 (Layout as any).Screen = LayoutScreen;
 
-export default Layout as any;
+export default Layout;
 
 /* ───────── Recursive renderer ───────── */
 
@@ -1185,9 +1380,10 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
   const panelColor = shiftLightness(theme.panelColor, depth * theme.contrastStep);
   const buttonColor = shiftLightness(theme.buttonColor, depth * theme.contrastStep);
   const isWeb = Platform.OS === 'web';
-  const { animationPhase, animationDurationMs, onActionEvent, onScreenHoverIn, onScreenHoverOut } = React.useContext(LayoutContext);
+  const { animationPhase, animationDurationMs, onActionEvent, onScreenHoverIn, onScreenHoverOut, onScreenDragStart, onScreenDragEnd } = React.useContext(LayoutContext);
   const targetFlexGrow = getFlexGrowValue(node.size);
   const flexGrow = useSharedValue(targetFlexGrow);
+  const screenDragStateRef = React.useRef<{ startX: number; startY: number; dragging: boolean } | null>(null);
 
   React.useEffect(() => {
     cancelAnimation(flexGrow);
@@ -1229,6 +1425,40 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
   if (node.type === 'screen') {
     const content = screenMap.get(node.screenTemplate);
     const contentRadius = Math.max(theme.borderRadius - theme.borderWidth + theme.wireframeRadiusOffset, 0);
+    const attachScreenDragListeners = Platform.OS === 'web'
+      ? (event: any) => {
+          if (layerMode !== 'controls') return;
+          const nativeEvent = event.nativeEvent as PointerEvent;
+          const startX = nativeEvent.clientX;
+          const startY = nativeEvent.clientY;
+          screenDragStateRef.current = { startX, startY, dragging: false };
+
+          const handlePointerMove = (e: PointerEvent) => {
+            const state = screenDragStateRef.current;
+            if (!state) return;
+            const dx = e.clientX - state.startX;
+            const dy = e.clientY - state.startY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (!state.dragging && dist > 3) {
+              state.dragging = true;
+              onScreenDragStart?.(node.id, node.screenTemplate, path);
+            }
+          };
+
+          const handlePointerUp = (e: PointerEvent) => {
+            const state = screenDragStateRef.current;
+            window.removeEventListener('pointermove', handlePointerMove);
+            window.removeEventListener('pointerup', handlePointerUp);
+            screenDragStateRef.current = null;
+            if (state?.dragging) {
+              onScreenDragEnd?.(node.id, node.screenTemplate, path, e.clientX, e.clientY);
+            }
+          };
+
+          window.addEventListener('pointermove', handlePointerMove);
+          window.addEventListener('pointerup', handlePointerUp);
+        }
+      : undefined;
 
     return (
       <FlexContainer style={flexStyle}>
@@ -1279,10 +1509,12 @@ const LayoutRenderer = ({ node, screenMap, theme, visibilityMap, depth, path, la
             <View
               style={{ flex: 1 }}
               onPointerEnter={() => onScreenHoverIn?.(node.id, node.screenTemplate, path)}
-              onPointerLeave={onScreenHoverOut}
+              onPointerLeave={() => onScreenHoverOut?.(node.id)}
+              onPointerDown={attachScreenDragListeners}
             >
               {onActionEvent && (
                 <Pressable
+                  onPointerDown={(event: any) => event.stopPropagation?.()}
                   onPressIn={() => onActionEvent({ type: 'press-start', target: 'close', id: path, x: 0, y: 0 })}
                   onPressOut={() => onActionEvent({ type: 'press-end', target: 'close', id: path, x: 0, y: 0 })}
                   style={{
@@ -1471,8 +1703,11 @@ const ScreenContentOverlay = ({
   rect,
   theme,
   transitionEnabled,
+  isDragSource,
   onHoverIn,
   onHoverOut,
+  onDragStart,
+  onDragEnd,
   children,
 }: {
   instanceId: string;
@@ -1481,15 +1716,19 @@ const ScreenContentOverlay = ({
   rect: PixelRect;
   theme: LayoutTheme;
   transitionEnabled: boolean;
+  isDragSource: boolean;
   onHoverIn: (instanceId: string, templateId: string | number, slotId: string) => void;
-  onHoverOut: () => void;
+  onHoverOut: (instanceId: string) => void;
+  onDragStart: (instanceId: string, templateId: string | number, slotId: string) => void;
+  onDragEnd: (instanceId: string, templateId: string | number, slotId: string, clientX: number, clientY: number) => void;
   children: ReactNode;
 }) => {
   React.useEffect(() => {
-    console.log(`[Overlay:${instanceId}] x=${rect.x.toFixed(1)} y=${rect.y.toFixed(1)} w=${rect.width.toFixed(1)} h=${rect.height.toFixed(1)}`);
+    layoutDebugLog(`[Overlay:${instanceId}] x=${rect.x.toFixed(1)} y=${rect.y.toFixed(1)} w=${rect.width.toFixed(1)} h=${rect.height.toFixed(1)}`);
   }, [instanceId, rect.x, rect.y, rect.width, rect.height]);
 
   const contentRadius = Math.max(theme.borderRadius - theme.borderWidth, 0);
+  const dragStateRef = React.useRef<{ startX: number; startY: number; dragging: boolean } | null>(null);
   const webTransitionStyle: StyleProp<ViewStyle> = Platform.OS === 'web'
     ? {
         transitionProperty: 'transform, width, height',
@@ -1511,11 +1750,53 @@ const ScreenContentOverlay = ({
           transform: [{ translateX: rect.x }, { translateY: rect.y }],
           borderRadius: contentRadius,
           overflow: 'hidden',
+          opacity: isDragSource ? 0.5 : 1,
         },
         webTransitionStyle,
       ]}
-      onPointerEnter={() => onHoverIn(instanceId, templateId, slotId)}
-      onPointerLeave={onHoverOut}
+      onPointerEnter={() => {
+        layoutDebugLog(`[ScreenContentOverlay:${instanceId}] onPointerEnter START`, { instanceId, templateId, slotId });
+        onHoverIn(instanceId, templateId, slotId);
+      }}
+      onPointerLeave={() => {
+        layoutDebugLog(`[ScreenContentOverlay:${instanceId}] onPointerLeave START`, { instanceId });
+        onHoverOut(instanceId);
+      }}
+      onPointerDown={Platform.OS === 'web' ? (event: any) => {
+        const nativeEvent = event.nativeEvent as PointerEvent;
+        const startX = nativeEvent.clientX;
+        const startY = nativeEvent.clientY;
+        layoutDebugLog(`[ScreenContentOverlay:${instanceId}] onPointerDown START`, { instanceId, startX, startY });
+        dragStateRef.current = { startX, startY, dragging: false };
+
+        const handlePointerMove = (e: PointerEvent) => {
+          const state = dragStateRef.current;
+          if (!state) return;
+          const dx = e.clientX - state.startX;
+          const dy = e.clientY - state.startY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (!state.dragging && dist > 3) {
+            state.dragging = true;
+            layoutDebugLog(`[ScreenContentOverlay:${instanceId}] pointerMove - drag started`, { instanceId, dist });
+            onDragStart(instanceId, templateId, slotId);
+          }
+        };
+
+        const handlePointerUp = (e: PointerEvent) => {
+          const state = dragStateRef.current;
+          layoutDebugLog(`[ScreenContentOverlay:${instanceId}] onPointerUp START`, { instanceId, dragging: state?.dragging, clientX: e.clientX, clientY: e.clientY });
+          window.removeEventListener('pointermove', handlePointerMove);
+          window.removeEventListener('pointerup', handlePointerUp);
+          dragStateRef.current = null;
+          if (state?.dragging) {
+            layoutDebugLog(`[ScreenContentOverlay:${instanceId}] calling onDragEnd`, { instanceId });
+            onDragEnd(instanceId, templateId, slotId, e.clientX, e.clientY);
+          }
+        };
+
+        window.addEventListener('pointermove', handlePointerMove);
+        window.addEventListener('pointerup', handlePointerUp);
+      } : undefined}
     >
       {theme.screenScale !== undefined && theme.screenScale !== 1 ? (
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
@@ -1652,6 +1933,7 @@ type ContainerChromeProps = {
 };
 
 const ContainerChrome = ({ path, theme, visibilityMap, panelColor, buttonColor, layerMode, children }: ContainerChromeProps) => {
+  const { themeTransitionDurationMs = 300 } = React.useContext(LayoutContext);
   const full = theme.borderWidth;
   const half = full * theme.inactiveButtonThicknessRatio;
   const showButtons = layerMode === 'controls' || layerMode === 'hover-focus';
@@ -1682,6 +1964,11 @@ const ContainerChrome = ({ path, theme, visibilityMap, panelColor, buttonColor, 
           paddingRight: rightPad,
           paddingBottom: bottomPad,
           paddingLeft: leftPad,
+          ...(Platform.OS === 'web' ? {
+            transitionProperty: 'padding-top, padding-right, padding-bottom, padding-left',
+            transitionDuration: `${themeTransitionDurationMs}ms`,
+            transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
+          } as any : {}),
         }}
       >
         {children}
@@ -1742,6 +2029,8 @@ const EdgeButton = ({
     layerMode,
     onActionEvent,
     renderOnlyActionKey,
+    addPageButtonsEnabled,
+    themeTransitionDurationMs = 300,
   } = React.useContext(LayoutContext);
   const { register, unregister } = React.useContext(OutlineRegistryContext);
   const elementRef = React.useRef<any>(null);
@@ -1756,6 +2045,13 @@ const EdgeButton = ({
   const classNameStyles = useResolveClassNames(visualConfig.className ?? '');
   const radius = Math.max(thickness / 2 + getButtonRadiusOffset(theme, layerMode), 0);
 
+  React.useEffect(() => {
+    register?.(action.key, elementRef);
+    return () => {
+      unregister?.(action.key);
+    };
+  }, [action.key, register, unregister]);
+
   if (!active) {
     return null;
   }
@@ -1763,13 +2059,6 @@ const EdgeButton = ({
   if (renderOnlyActionKey && renderOnlyActionKey !== action.key) {
     return null;
   }
-
-  React.useEffect(() => {
-    register?.(action.key, elementRef);
-    return () => {
-      unregister?.(action.key);
-    };
-  }, [action.key, register, unregister]);
 
   const baseStyle = {
     position: 'absolute' as const,
@@ -1779,6 +2068,13 @@ const EdgeButton = ({
     borderColor: visualConfig.borderColor,
     borderWidth: visualConfig.borderWidth,
     overflow: 'hidden' as const,
+    opacity: theme.outerButtonOpacity,
+    ...(Platform.OS === 'web' ? {
+      cursor: addPageButtonsEnabled ? 'pointer' : 'default !important',
+      transitionProperty: 'opacity, border-width, border-radius',
+      transitionDuration: `${themeTransitionDurationMs}ms`,
+      transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
+    } as any : {}),
   };
 
   const inner = (
@@ -1786,16 +2082,22 @@ const EdgeButton = ({
       ref={elementRef}
       disabled={!isInteractive}
       onHoverIn={() => {
+        layoutDebugLog(`[EdgeButton:${action.key}] onHoverIn START`, { actionKey: action.key, isInteractive });
         if (!isInteractive) {
+          layoutDebugLog(`[EdgeButton:${action.key}] onHoverIn ABORTED - not interactive`);
           return;
         }
+        layoutDebugLog(`[EdgeButton:${action.key}] onHoverIn dispatching hover-in event`);
         onActionEvent?.({ type: 'hover-in', target: 'button', id: action.key, action });
       }}
       onHoverOut={() => {
+        layoutDebugLog(`[EdgeButton:${action.key}] onHoverOut START`, { actionKey: action.key, isInteractive });
         if (!isInteractive) {
+          layoutDebugLog(`[EdgeButton:${action.key}] onHoverOut ABORTED - not interactive`);
           return;
         }
-        onActionEvent?.({ type: 'hover-out' });
+        layoutDebugLog(`[EdgeButton:${action.key}] onHoverOut dispatching hover-out event`);
+        onActionEvent?.({ type: 'hover-out', target: 'button', id: action.key });
       }}
       onPressIn={() => {
         if (!isInteractive) {
@@ -1863,6 +2165,8 @@ const SplitGap = ({
     onGapDragEnd,
     onActionEvent,
     renderOnlyActionKey,
+    addPageButtonsEnabled,
+    themeTransitionDurationMs = 300,
   } = React.useContext(LayoutContext);
   const { register, unregister } = React.useContext(OutlineRegistryContext);
   const elementRef = React.useRef<any>(null);
@@ -1871,7 +2175,23 @@ const SplitGap = ({
   const handledPressRef = React.useRef(false);
   const suppressHoverRef = React.useRef(false);
 
-  const spacerStyle = direction === 'row' ? { width: active ? full : half } : { height: active ? full : half };
+  const spacerStyle = direction === 'row' 
+    ? { 
+        width: active ? full : half,
+        ...(Platform.OS === 'web' ? {
+          transitionProperty: 'width',
+          transitionDuration: `${themeTransitionDurationMs}ms`,
+          transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
+        } as any : {}),
+      } 
+    : { 
+        height: active ? full : half,
+        ...(Platform.OS === 'web' ? {
+          transitionProperty: 'height',
+          transitionDuration: `${themeTransitionDurationMs}ms`,
+          transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
+        } as any : {}),
+      };
   const action: LayoutAction = { type: 'split', key: `${path}:split:${index}`, path, index, direction };
   const isInteractive = layerMode === 'controls';
   const isHoveredVisual = layerMode === 'controls' ? false : globalHoveredKey === action.key;
@@ -1892,6 +2212,13 @@ const SplitGap = ({
     borderColor: visualConfig.borderColor,
     borderWidth: visualConfig.borderWidth,
     overflow: 'hidden' as const,
+    opacity: theme.gapButtonOpacity,
+    ...(Platform.OS === 'web' ? {
+      cursor: addPageButtonsEnabled ? 'pointer' : 'default !important',
+      transitionProperty: 'opacity, border-width, border-radius',
+      transitionDuration: `${themeTransitionDurationMs}ms`,
+      transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
+    } as any : {}),
   };
 
   const iconWrapper = buttonIcon ? (
@@ -1958,12 +2285,22 @@ const SplitGap = ({
     ref: elementRef,
     disabled: !isInteractive,
     onHoverIn: () => {
-      if (!isInteractive) return;
+      layoutDebugLog(`[SplitGap:${action.key}] onHoverIn START`, { actionKey: action.key, isInteractive });
+      if (!isInteractive) {
+        layoutDebugLog(`[SplitGap:${action.key}] onHoverIn ABORTED - not interactive`);
+        return;
+      }
+      layoutDebugLog(`[SplitGap:${action.key}] onHoverIn dispatching hover-in event`);
       onActionEvent?.({ type: 'hover-in', target: 'gap', id: action.key, action });
     },
     onHoverOut: () => {
-      if (!isInteractive) return;
-      onActionEvent?.({ type: 'hover-out' });
+      layoutDebugLog(`[SplitGap:${action.key}] onHoverOut START`, { actionKey: action.key, isInteractive });
+      if (!isInteractive) {
+        layoutDebugLog(`[SplitGap:${action.key}] onHoverOut ABORTED - not interactive`);
+        return;
+      }
+      layoutDebugLog(`[SplitGap:${action.key}] onHoverOut dispatching hover-out event`);
+      onActionEvent?.({ type: 'hover-out', target: 'gap', id: action.key });
     },
     onPressIn: () => {
       if (!isInteractive) return;
